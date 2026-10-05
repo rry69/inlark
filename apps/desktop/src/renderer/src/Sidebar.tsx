@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
 import {
   Archive,
   ChevronDown,
@@ -23,6 +23,7 @@ import { Wordmark } from '@inlark/ui/components/wordmark'
 import type { Account, Mailbox, View } from '@inlark/core'
 import appIcon from '../../../resources/icon-mark.svg?no-inline'
 import { AccountMark } from './AccountMark'
+import { DRAG_MIME, type DropTarget } from './ConversationList'
 import { ShortcutHint, useShortcutText, type ShortcutId } from './shortcuts'
 
 export const views: { id: View; title: string; icon: typeof Inbox; shortcut?: ShortcutId }[] = [
@@ -58,6 +59,7 @@ export function Sidebar({
   onNavigate,
   onSettings,
   onFolderAction,
+  onDropConversations,
 }: {
   accounts: Account[]
   boxesByAccount: Record<string, Mailbox[]>
@@ -75,6 +77,8 @@ export function Sidebar({
   onCompose: () => void
   onNavigate: (next: { view: View; account?: string; folder?: string }) => void
   onSettings: (tab: 'accounts' | 'general') => void
+  /** A dragged conversation landed on a sidebar destination. */
+  onDropConversations?: (target: DropTarget, keys: string[]) => void
   onFolderAction: (
     operation: 'create' | 'rename' | 'delete',
     accountId: string,
@@ -110,6 +114,37 @@ export function Sidebar({
   useEffect(() => {
     localStorage.setItem('sidebar-account-expanded', JSON.stringify(accountExpanded))
   }, [accountExpanded])
+  /** Only these views accept a dragged conversation; Starred/Sent/Drafts do not. */
+  const dropViews: ReadonlySet<View> = new Set(['inbox', 'archive', 'junk', 'trash'])
+  const dropKey = (target: DropTarget) =>
+    target.kind + ':' + (target.kind === 'folder' ? target.mailboxId : target.view) + ':' + (target.accountId || '')
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const droppable = (target: DropTarget, enabled: boolean) => {
+    if (!enabled || !onDropConversations) return {}
+    const key = dropKey(target)
+    return {
+      onDragOver: (event: DragEvent<HTMLButtonElement>) => {
+        if (!event.dataTransfer.types.includes(DRAG_MIME)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        setDropTarget(key)
+      },
+      onDragLeave: () => setDropTarget((current) => (current === key ? null : current)),
+      onDrop: (event: DragEvent<HTMLButtonElement>) => {
+        event.preventDefault()
+        setDropTarget(null)
+        try {
+          const keys = JSON.parse(event.dataTransfer.getData(DRAG_MIME)) as unknown
+          if (Array.isArray(keys) && keys.length && keys.every((k) => typeof k === 'string'))
+            onDropConversations(target, keys)
+        } catch {
+          // Drops from outside the list carry no conversation keys; ignore them.
+        }
+      },
+    }
+  }
+  const dropClass = (target: DropTarget, enabled: boolean) =>
+    enabled && onDropConversations && dropTarget === dropKey(target) ? ' drop-target' : ''
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -160,9 +195,11 @@ export function Sidebar({
                 className={
                   'nav-item ' +
                   (v.id === 'archive' ? 'nav-secondary-start ' : '') +
-                  (view === v.id && !route.account && !route.folder && !route.q ? 'active' : '')
+                  (view === v.id && !route.account && !route.folder && !route.q ? 'active' : '') +
+                  dropClass({ kind: 'view', view: v.id }, dropViews.has(v.id))
                 }
                 onClick={() => go({ view: v.id })}
+                {...droppable({ kind: 'view', view: v.id }, dropViews.has(v.id))}
               >
                 <v.icon size={16} strokeWidth={1.65} />
                 {!collapsed && (
@@ -255,7 +292,11 @@ export function Sidebar({
                               'nav-item ' +
                               (route.account === a.id && !route.folder && !route.q && view === v.id
                                 ? 'active'
-                                : '')
+                                : '') +
+                              dropClass(
+                                { kind: 'view', view: v.id, accountId: a.id },
+                                dropViews.has(v.id),
+                              )
                             }
                             aria-current={
                               route.account === a.id && !route.folder && !route.q && view === v.id
@@ -263,6 +304,10 @@ export function Sidebar({
                                 : undefined
                             }
                             onClick={() => go({ view: v.id, account: a.id })}
+                            {...droppable(
+                              { kind: 'view', view: v.id, accountId: a.id },
+                              dropViews.has(v.id),
+                            )}
                           >
                             <v.icon size={15} strokeWidth={1.65} />
                             <span>{v.title}</span>
@@ -278,12 +323,20 @@ export function Sidebar({
                             <button
                               className={
                                 'nav-item ' +
-                                (route.folder === b.id && route.account === a.id ? 'active' : '')
+                                (route.folder === b.id && route.account === a.id ? 'active' : '') +
+                                dropClass(
+                                  { kind: 'folder', accountId: a.id, mailboxId: b.id },
+                                  true,
+                                )
                               }
                               aria-current={
                                 route.folder === b.id && route.account === a.id ? 'page' : undefined
                               }
                               onClick={() => go({ view: 'all', account: a.id, folder: b.id })}
+                              {...droppable(
+                                { kind: 'folder', accountId: a.id, mailboxId: b.id },
+                                true,
+                              )}
                             >
                               <Folder size={14} />
                               <span>{b.name}</span>

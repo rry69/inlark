@@ -130,6 +130,15 @@ describe('IMAP TLS policy', () => {
         .servername,
     ).toBeUndefined()
   })
+  it('uses XOAUTH2 with the token instead of a password when one is given', () => {
+    expect(imapFlowOptions({ ...config.incoming, password: 'x' }, 'command').auth).toEqual({
+      user: 'me',
+      pass: 'x',
+    })
+    expect(
+      imapFlowOptions({ ...config.incoming, password: 'x', accessToken: 'tok' }, 'command').auth,
+    ).toEqual({ user: 'me', accessToken: 'tok' })
+  })
   it('refuses a mailbox-wide EXPUNGE and a MOVE emulation in the adapter itself', async () => {
     const port = new ImapFlowPort({ ...config.incoming, password: 'x' }, 'command')
     ;(port as any).client.capabilities = new Map([['IMAP4rev1', true]])

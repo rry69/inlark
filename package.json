@@ -14,6 +14,7 @@
     "package:linux": "bash scripts/package-linux.sh",
     "test:integration": "vitest run --no-file-parallelism tests/stalwart.integration.test.ts tests/stalwart-imap.integration.test.ts",
     "test:stalwart": "node scripts/stalwart-test.mjs",
+    "test:stalwart:native": "node scripts/stalwart-test-native.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:deb": "bash scripts/test-deb.sh"

@@ -7,7 +7,7 @@ import {
   useRef,
   memo,
 } from 'react'
-import type { Ref, RefObject } from 'react'
+import type { DragEvent, Ref, RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Account, Conversation, MailAction, View } from '@inlark/core'
 import { Spinner } from '@inlark/ui'
@@ -18,6 +18,13 @@ import { offersAction } from './view-actions'
 export type ConversationListHandle = {
   scrollToConversation: (key: string) => void
 }
+
+/** A sidebar destination a dragged conversation can land on. */
+export type DropTarget =
+  | { kind: 'view'; view: View; accountId?: string }
+  | { kind: 'folder'; accountId: string; mailboxId: string }
+/** Drag payload for conversations, as a JSON list of conversation keys. */
+export const DRAG_MIME = 'application/x-inlark-conversations'
 
 type Row = { group: string } | { conversation: Conversation }
 
@@ -33,6 +40,7 @@ const ListConversationRow = memo(function ListConversationRow({
   onFocus,
   onSelect,
   onAction,
+  onDragStart,
 }: {
   conversation: Conversation
   account?: Account
@@ -45,6 +53,7 @@ const ListConversationRow = memo(function ListConversationRow({
   onFocus: (key: string) => void
   onSelect: (key: string, range: boolean) => void
   onAction: (action: MailAction, conversation: Conversation) => void
+  onDragStart: (conversation: Conversation, event: DragEvent) => void
 }) {
   return (
     <ConversationRow
@@ -55,6 +64,7 @@ const ListConversationRow = memo(function ListConversationRow({
       onOpen={() => onOpen(conversation)}
       onFocus={() => onFocus(conversation.key)}
       onSelect={(range) => onSelect(conversation.key, range)}
+      onDragStart={(event) => onDragStart(conversation, event)}
       busy={busy}
       remoteImages={remoteImages}
       onArchive={
@@ -89,6 +99,7 @@ export function ConversationList({
   onFocus,
   onSelect,
   onAction,
+  onDragStart,
 }: {
   conversations: Conversation[]
   accounts: Account[]
@@ -111,6 +122,7 @@ export function ConversationList({
   onFocus: (key: string) => void
   onSelect: (key: string, range: boolean) => void
   onAction: (action: MailAction, conversation: Conversation) => void
+  onDragStart: (conversation: Conversation, event: DragEvent) => void
 }) {
   const rowHeight = density === 'compact' ? 44 : 64
   const groupHeight = 36
@@ -295,6 +307,7 @@ export function ConversationList({
                   onFocus={onFocus}
                   onSelect={onSelect}
                   onAction={onAction}
+                  onDragStart={onDragStart}
                 />
               )}
             </div>

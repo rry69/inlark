@@ -65,6 +65,7 @@ export function SubmissionList({
 }) {
   const [working, setWorking] = useState<Record<string, string>>({})
   const [replace, setReplace] = useState<SubmissionSummary>()
+  const [retry, setRetry] = useState<SubmissionSummary>()
   const [dismiss, setDismiss] = useState<SubmissionSummary>()
   if (!submissions.length) return null
   const run = async (s: SubmissionSummary, action: string, task: () => Promise<void>) => {
@@ -148,6 +149,9 @@ export function SubmissionList({
           >
             {label('check', 'Check again')}
           </Button>
+          <Button size="small" variant="primary" disabled={!!busy} onClick={() => setRetry(s)}>
+            {label('retry', 'Retry send')}
+          </Button>
           <Button size="small" disabled={!!busy} onClick={() => setReplace(s)}>
             Send a replacement…
           </Button>
@@ -222,6 +226,47 @@ export function SubmissionList({
           </div>
         )
       })}
+      <Modal
+        open={!!retry}
+        onOpenChange={(open) => {
+          if (!open) setRetry(undefined)
+        }}
+        title="Retry sending?"
+        description={
+          'Inlark couldn’t confirm whether “' +
+          (retry?.subject || '(No subject)') +
+          '” was delivered. The server is checked first, but if the first attempt went through silently, recipients may still receive it twice.'
+        }
+      >
+        <p className="modal-body-text">
+          The retry reuses the original message, so threads and replies stay intact. Check Sent
+          first if you haven’t already.
+        </p>
+        <div className="modal-actions">
+          <Button onClick={() => setRetry(undefined)}>Cancel</Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              const s = retry
+              setRetry(undefined)
+              if (s)
+                void run(s, 'retry', async () => {
+                  const result = await api.retrySend(s.draftId)
+                  notify(
+                    result.status === 'sent'
+                      ? 'Message sent.'
+                      : result.status === 'partial'
+                        ? 'Sent to some recipients.'
+                        : result.message,
+                    result.status === 'uncertain' ? 'error' : undefined,
+                  )
+                })
+            }}
+          >
+            Retry send
+          </Button>
+        </div>
+      </Modal>
       <Modal
         open={!!replace}
         onOpenChange={(open) => {

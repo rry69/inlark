@@ -55,10 +55,14 @@ export const folderMappingsSchema = z.partialRecord(
   folderRole,
   z.object({ path: z.string().min(1).max(1024), create: z.boolean().optional() }).nullable(),
 )
+export const oauthProviderSchema = z.enum(['google', 'microsoft'])
 export const accountSchema = z
   .object({
     config: connectionConfigSchema,
-    password: z.string().min(1, 'Enter your password.').max(4096),
+    password: z.string().min(1, 'Enter your password.').max(4096).optional(),
+    accessToken: z.string().min(1).max(8192).optional(),
+    oauthProvider: oauthProviderSchema.optional(),
+    oauthSessionId: id.optional(),
     outgoingPassword: z.string().min(1).max(4096).optional(),
     name: z.string().max(100),
     senderName: z.string().max(100).optional(),
@@ -66,11 +70,17 @@ export const accountSchema = z
     connectionId: id.optional(),
     folders: folderMappingsSchema.optional(),
   })
+  .refine((input) => !!input.password || !!input.accessToken || !!input.oauthSessionId, {
+    message: 'Enter your password or sign in with OAuth.',
+    path: ['password'],
+  })
   .refine(
     (input) =>
       input.config.protocol !== 'imap' ||
       input.config.outgoingSameCredentials ||
-      !!input.outgoingPassword,
+      !!input.outgoingPassword ||
+      !!input.accessToken ||
+      !!input.oauthSessionId,
     { message: 'Enter the outgoing server password.', path: ['outgoingPassword'] },
   )
 export const accountDetailsSchema = z.object({
@@ -182,6 +192,7 @@ export const ipcSchemas = {
   ready: z.tuple([]),
   discover: z.tuple([z.string().trim().toLowerCase().pipe(z.email().max(320))]),
   testConnection: z.tuple([accountSchema]),
+  beginOAuth: z.tuple([oauthProviderSchema]),
   connect: z.tuple([accountSchema]),
   connectionSettings: z.tuple([id]),
   folderMappings: z.tuple([id]),
@@ -215,6 +226,7 @@ export const ipcSchemas = {
   deleteServerDraft: z.tuple([id, id]),
   send: z.tuple([sendDraftSchema]),
   reconcile: z.tuple([z.string().uuid()]),
+  retrySend: z.tuple([z.string().uuid()]),
   submissions: z.tuple([]),
   retrySentCopy: z.tuple([z.string().uuid()]),
   recoverRejected: z.tuple([z.string().uuid()]),
@@ -222,6 +234,8 @@ export const ipcSchemas = {
   dismissSubmission: z.tuple([z.string().uuid()]),
   stageAttachments: z.tuple([]),
   attachment: z.tuple([id, attachmentSchema, z.boolean()]),
+  previewAttachment: z.tuple([id, attachmentSchema]),
+  saveAttachments: z.tuple([id, z.array(attachmentSchema).max(100)]),
   inlineImage: z.tuple([id, attachmentSchema]),
   remoteImage: z.tuple([z.string().url().max(8192)]),
   senderAvatar: z.tuple([z.string().trim().email().max(320)]),

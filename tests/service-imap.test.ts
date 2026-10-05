@@ -58,6 +58,8 @@ let directory: string
 let server: FakeImapServer
 let service: MailService
 let store: JsonStore
+/** Mints a new access token on every reconnect, the way a real OAuth server does. */
+let refreshed: ReturnType<typeof vi.fn<(provider: string, refreshToken: string) => Promise<any>>>
 let submit: ReturnType<typeof vi.fn<(...args: any[]) => Promise<SubmissionOutcome>>>
 let verify: ReturnType<typeof vi.fn<(...args: any[]) => Promise<void>>>
 const factory: ProviderFactory = (options) =>
@@ -65,7 +67,8 @@ const factory: ProviderFactory = (options) =>
     connectionId: options.connectionId,
     name: options.name,
     config: options.config as typeof input.config & { protocol: 'imap' },
-    password: options.secrets.password,
+    password: options.secrets.password || '',
+    ...(options.secrets.accessToken ? { accessToken: options.secrets.accessToken } : {}),
     outgoingPassword: options.secrets.outgoingPassword,
     folders: options.folders,
     index: openInProcessIndex(
@@ -79,7 +82,11 @@ const factory: ProviderFactory = (options) =>
   })
 async function start() {
   store = new JsonStore(directory)
-  service = new MailService(store, () => {}, { providers: factory })
+  service = new MailService(store, () => {}, {
+    providers: factory,
+    // The provider is stubbed so no browser or network is involved.
+    refreshToken: (provider, refreshToken) => refreshed(provider, refreshToken),
+  })
   await service.init()
 }
 beforeEach(async () => {
@@ -87,6 +94,11 @@ beforeEach(async () => {
   server = new FakeImapServer()
   submit = vi.fn(async () => ({ accepted: ['alex@example.org', 'sam@example.org'], rejected: [] }))
   verify = vi.fn(async () => {})
+  refreshed = vi.fn(async () => ({
+    accessToken: 'access-2',
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+  }))
+  server.accessToken = 'access-1'
   await start()
 })
 afterEach(async () => {
@@ -146,6 +158,57 @@ describe('IMAP account setup', () => {
     await service.send(draft)
     expect(submit.mock.calls[0][0]).toMatchObject({ password: 'outgoing-secret' })
   })
+  it('keeps the access token out of the saved connection and refreshes it on reconnect', async () => {
+    server.accessToken = 'access-1'
+    const sessionId = 'oauth-session'
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(service as any).pendingOAuth.set(sessionId, {
+      provider: 'google',
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+    })
+    await service.connect({ ...input, password: undefined, oauthSessionId: sessionId, oauthProvider: 'google' })
+    expect(server.tokens).toEqual(['access-1'])
+    const saved = JSON.parse(await readFile(join(directory, 'connections.json'), 'utf8')).data[0]
+    expect(JSON.stringify(saved)).not.toContain('access-1')
+    expect(saved).toMatchObject({ oauthProvider: 'google', oauthLocalSecret: 'refresh-1' })
+    // The consumed sign-in is gone, so a replayed session ID cannot reconnect anything.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((service as any).pendingOAuth.has(sessionId)).toBe(false)
+    server.accessToken = 'access-2'
+    await restart()
+    expect(refreshed).toHaveBeenCalledWith('google', 'refresh-1')
+    // A new token was minted and presented, never the one from the original sign-in.
+    expect(server.tokens.at(-1)).toBe('access-2')
+    expect(server.tokens).not.toContain('refresh-1')
+  })
+
+  it('replaces a rotated refresh token in the keyring copy', async () => {
+    server.accessToken = 'access-1'
+    const sessionId = 'oauth-session'
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(service as any).pendingOAuth.set(sessionId, {
+      provider: 'google',
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+    })
+    await service.connect({ ...input, password: undefined, oauthSessionId: sessionId, oauthProvider: 'google' })
+    refreshed.mockResolvedValueOnce({ accessToken: 'access-3', refreshToken: 'refresh-3' })
+    server.accessToken = 'access-3'
+    await restart()
+    const saved = JSON.parse(await readFile(join(directory, 'connections.json'), 'utf8')).data[0]
+    expect(saved.oauthLocalSecret).toBe('refresh-3')
+    expect(JSON.stringify(saved)).not.toContain('access-3')
+  })
+
+  it('never persists an access token even when one is passed directly', async () => {
+    server.accessToken = 'access-1'
+    await service.connect({ ...input, password: undefined, accessToken: 'access-1', oauthProvider: 'google' })
+    const saved = JSON.parse(await readFile(join(directory, 'connections.json'), 'utf8')).data[0]
+    expect(JSON.stringify(saved)).not.toContain('access-1')
+    expect(server.tokens).toEqual(['access-1'])
+  })
+
   it('creates missing folders chosen during setup and remembers the choice', async () => {
     server.boxes.delete('Archive')
     await service.connect({ ...input, folders: { archive: { path: 'Archive', create: true } } })

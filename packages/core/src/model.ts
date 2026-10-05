@@ -283,9 +283,31 @@ export interface FolderMappingReview {
    */
   mappings: Partial<Record<FolderRole, { path: string; source: 'server' | 'user' | 'name' } | null>>
 }
+export type OAuthProviderId = 'google' | 'microsoft'
+export interface OAuthTokens {
+  provider: OAuthProviderId
+  accessToken: string
+  /** Refresh token lives in OS keyring; never leaves main. */
+  refreshToken?: string
+  expiresAt?: string
+}
+/**
+ * A finished browser sign-in, held in the main process until the account is connected. No token
+ * ever crosses to the renderer: only this ID does.
+ */
+export interface OAuthSignIn {
+  sessionId: string
+  provider: OAuthProviderId
+  expiresAt?: string
+}
 export interface ConnectInput {
   config: ConnectionConfig
-  password: string
+  password?: string
+  /** OAuth2 access token (RAM only). When set, IMAP/SMTP use XOAUTH2. */
+  accessToken?: string
+  oauthProvider?: OAuthProviderId
+  /** A sign-in completed in the main process; resolves to the token it holds. */
+  oauthSessionId?: string
   /** Only used when the outgoing server has its own credentials. */
   outgoingPassword?: string
   name: string
@@ -300,6 +322,8 @@ export interface ConnectionSettings {
   name: string
   config: ConnectionConfig
   remember: boolean
+  /** Set when this connection signs in with OAuth instead of a password. */
+  oauthProvider?: OAuthProviderId
   folders?: FolderMappings
 }
 export type DiscoverySource =
@@ -485,6 +509,8 @@ export interface DesktopMailAPI {
   discover(email: string): Promise<DiscoveryResult>
   /** Checks a login without saving it. Nothing is sent to any recipient. */
   testConnection(input: ConnectInput): Promise<ConnectionTest>
+  /** Runs the provider's browser sign-in and keeps the tokens in the main process. */
+  beginOAuth(provider: OAuthProviderId): Promise<OAuthSignIn>
   connect(input: ConnectInput): Promise<Account[]>
   connectionSettings(connectionId: string): Promise<ConnectionSettings>
   folderMappings(accountId: string): Promise<FolderMappingReview>
@@ -517,6 +543,8 @@ export interface DesktopMailAPI {
   deleteServerDraft(accountId: string, messageId: string): Promise<void>
   send(draft: Draft): Promise<SendResult>
   reconcile(draftId: string): Promise<SendResult>
+  /** Retries the submission of an unconfirmed send with its original Message-ID. */
+  retrySend(draftId: string): Promise<SendResult>
   submissions(): Promise<SubmissionSummary[]>
   /** Retries only the Sent copy of a message that was already sent. */
   retrySentCopy(draftId: string): Promise<SendResult>
@@ -527,6 +555,13 @@ export interface DesktopMailAPI {
   dismissSubmission(draftId: string): Promise<void>
   stageAttachments(): Promise<StagedAttachment[]>
   attachment(accountId: string, attachment: Attachment, open: boolean): Promise<void>
+  /** An attachment as a data URL for in-app preview. Rejects types the reader cannot show. */
+  previewAttachment(accountId: string, attachment: Attachment): Promise<string>
+  /** Saves every attachment with one folder choice. Reports what landed and what did not. */
+  saveAttachments(
+    accountId: string,
+    attachments: Attachment[],
+  ): Promise<{ saved: number; skipped: string[] }>
   inlineImage(accountId: string, attachment: Attachment): Promise<string>
   remoteImage(url: string): Promise<string | null>
   senderAvatar(email: string): Promise<string | null>

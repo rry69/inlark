@@ -54,6 +54,7 @@ import {
   Paperclip as PaperclipGlyph,
   PenLine as PenLineGlyph,
   Plus as PlusGlyph,
+  PrinterIcon as PrinterGlyph,
   RefreshCw as RefreshCwGlyph,
   Reply as ReplyGlyph,
   ReplyAll as ReplyAllGlyph,
@@ -138,6 +139,7 @@ export const BulletList = icon(BulletListGlyph)
 export const Paperclip = icon(PaperclipGlyph)
 export const PenLine = icon(PenLineGlyph)
 export const Plus = icon(PlusGlyph)
+export const Printer = icon(PrinterGlyph)
 export const RefreshCw = icon(RefreshCwGlyph)
 export const Reply = icon(ReplyGlyph)
 export const ReplyAll = icon(ReplyAllGlyph)

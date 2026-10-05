@@ -78,7 +78,7 @@ import { Reader, type UnsubscribeState } from './Reader'
 import { MoveDialog } from './MoveDialog'
 import { CommandPalette, type Command } from './CommandPalette'
 import { Sidebar, views } from './Sidebar'
-import { ConversationList, type ConversationListHandle } from './ConversationList'
+import { ConversationList, DRAG_MIME, type ConversationListHandle, type DropTarget } from './ConversationList'
 import { DraftRows, DraftSelectionBar, deletable, type DraftItem } from './DraftList'
 import { longDate } from './mail-date'
 import {
@@ -111,6 +111,23 @@ type Toast = {
   tone?: 'error' | 'info'
 }
 let toastSequence = 0
+/** A conversation fetch must never spin forever: after this long it fails so the UI can offer a retry. */
+const CONVERSATION_TIMEOUT_MS = 45_000
+const withConversationTimeout = <T,>(work: Promise<T>): Promise<T> =>
+  Promise.race([
+    work,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              'Opening this conversation is taking too long. The account may still be fetching its first messages. Try again.',
+            ),
+          ),
+        CONVERSATION_TIMEOUT_MS,
+      ),
+    ),
+  ])
 const discardKeys = (item: DraftItem) =>
   item.kind === 'local' && item.draft.serverId
     ? [item.key, 'server:' + scopeKey(item.draft.accountId, item.draft.serverId)]
@@ -306,7 +323,7 @@ export function App() {
   )
   const thread = useQuery({
     queryKey: ['thread', route.threadAccount, route.thread],
-    queryFn: () => api.conversation(route.threadAccount!, route.thread!),
+    queryFn: () => withConversationTimeout(api.conversation(route.threadAccount!, route.thread!)),
     enabled: !!route.thread && !!readerAccount,
     // Open instantly from the list summary; bodies arrive a moment later.
     placeholderData: listed
@@ -472,6 +489,32 @@ export function App() {
     const limit = targetLimit(accounts, targetAccounts(chosen), 'move')
     if (limit) explain(limit)
     else if (chosen.length) setMoveTargets(chosen)
+  }
+  /** A dragged conversation landed on a sidebar destination; reuse the list actions. */
+  const dropConversations = (target: DropTarget, keys: string[]) => {
+    const found = conversations.filter((c) => keys.includes(c.key))
+    if (!found.length) return
+    const scoped = target.accountId
+      ? found.filter((c) => c.accountId === target.accountId)
+      : found
+    if (!scoped.length) {
+      notify('Drag conversations onto folders of the same account.', 'info')
+      return
+    }
+    const explicit = scoped.map((c) => ({ accountId: c.accountId, threadId: c.id }))
+    if (target.kind === 'folder') {
+      void act('move', explicit, target.mailboxId)
+      return
+    }
+    const mapped: MailAction | undefined = (
+      {
+        inbox: 'restore',
+        archive: 'archive',
+        junk: 'spam',
+        trash: 'trash',
+      } as Partial<Record<View, MailAction>>
+    )[target.view]
+    if (mapped) void act(mapped, explicit)
   }
   /** Why the current conversation or selection can't take this action, if it can't. */
   const unavailable = (action: MailAction) =>
@@ -1460,6 +1503,7 @@ export function App() {
         onFolderAction={(operation, accountId, folder) =>
           setFolderDialog({ operation, accountId, folder })
         }
+        onDropConversations={dropConversations}
       />
       <main className="main-content">
         <UpdateNotice status={updateStatus} />
@@ -1523,6 +1567,11 @@ export function App() {
               title={thread.isError ? 'This conversation is unavailable' : 'Opening conversation'}
               description={thread.isError ? friendlyError(thread.error) : undefined}
             >
+              {thread.isError && (
+                <Button variant="primary" onClick={() => void thread.refetch()}>
+                  Try again
+                </Button>
+              )}
               <Button onClick={back}>Back to {title.toLowerCase()}</Button>
             </EmptyState>
           )
@@ -2013,6 +2062,13 @@ export function App() {
                     { accountId: conversation.accountId, threadId: conversation.id },
                   ])
                 }
+                onDragStart={(conversation, event) => {
+                  const keys = selected.has(conversation.key)
+                    ? [...selected]
+                    : [conversation.key]
+                  event.dataTransfer.setData(DRAG_MIME, JSON.stringify(keys))
+                  event.dataTransfer.effectAllowed = 'move'
+                }}
               />
             )}
             <footer className="list-footer">

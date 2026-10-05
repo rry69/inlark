@@ -6,6 +6,8 @@ import { ProviderError, type ServerSettings, type SubmissionOutcome } from '@inl
 
 export interface SmtpSettings extends ServerSettings {
   password: string
+  /** OAuth2 access token (RAM only). When set, AUTH uses XOAUTH2 instead of password. */
+  accessToken?: string
   timeoutMs?: number
   /** Tests only: trust this CA instead of the system roots. */
   tls?: { ca?: string | Uint8Array }
@@ -38,6 +40,54 @@ interface Internals {
 
 const passwordMethods = ['PLAIN', 'LOGIN', 'CRAM-MD5']
 
+/** SASL XOAUTH2 initial client response, base64(`user=<user>\x01auth=Bearer <token>\x01\x01`). */
+export function xoauth2InitialResponse(user: string, accessToken: string): string {
+  return Buffer.from(`user=${user}\x01auth=Bearer ${accessToken}\x01\x01`, 'utf-8').toString(
+    'base64',
+  )
+}
+
+interface Xoauth2Context {
+  auth: { user?: string; accessToken?: string }
+  sendCommand(cmd: string): Promise<{ status: number; response: string; text: string }>
+  resolve(): void
+  reject(error: Error | string): void
+}
+
+/**
+ * nodemailer `customAuth` handler for XOAUTH2. The access token travels in the per-login
+ * `auth` object (RAM only), never in options or logs. A 334 challenge gets the required
+ * empty response before the failure is reported, so the connection stays in sync.
+ */
+async function handleXoauth2(ctx: Xoauth2Context): Promise<void> {
+  const initial = xoauth2InitialResponse(ctx.auth.user || '', ctx.auth.accessToken || '')
+  let response: { status: number; response: string; text: string }
+  try {
+    response = await ctx.sendCommand('AUTH XOAUTH2 ' + initial)
+  } catch (error) {
+    ctx.reject(error as Error)
+    return
+  }
+  if (response.status === 235) {
+    ctx.resolve()
+    return
+  }
+  if (response.status === 334) {
+    try {
+      const final = await ctx.sendCommand('')
+      if (final.status === 235) {
+        ctx.resolve()
+        return
+      }
+      ctx.reject(final.response || final.text || 'Authentication failed')
+    } catch (error) {
+      ctx.reject(error as Error)
+    }
+    return
+  }
+  ctx.reject(response.response || response.text || 'Authentication failed')
+}
+
 export function smtpOptions(settings: SmtpSettings): SMTPConnection.Options {
   const ca = settings.tls?.ca
   const timeout = settings.timeoutMs
@@ -58,6 +108,7 @@ export function smtpOptions(settings: SmtpSettings): SMTPConnection.Options {
     logger: false,
     debug: false,
     transactionLog: false,
+    customAuth: { XOAUTH2: (ctx: unknown) => handleXoauth2(ctx as Xoauth2Context) },
     lmtp: false,
     tls: {
       rejectUnauthorized: true,
@@ -201,6 +252,35 @@ async function login(conn: SMTPConnection, settings: SmtpSettings): Promise<void
       `${host} doesn't offer password sign-in on this connection, so nothing can be sent. Check the port and security settings.`,
     )
   const offered = (conn as unknown as Internals)._supportedAuth ?? []
+  if (settings.accessToken) {
+    if (offered.length && !offered.includes('XOAUTH2'))
+      throw new ProviderError(
+        'outgoingNetwork',
+        `${host} doesn't offer OAuth sign-in on this connection, so nothing can be sent. Check the port and security settings.`,
+      )
+    await new Promise<void>((resolve, reject) =>
+      conn.login(
+        { user: settings.username, method: 'XOAUTH2', accessToken: settings.accessToken },
+        (error) => {
+          if (!error) return resolve()
+          const failure = error as SmtpFailure
+          if (failure.code !== 'EAUTH') return reject(failure)
+          reject(
+            failure.responseCode && failure.responseCode < 500
+              ? new ProviderError(
+                  'outgoingNetwork',
+                  `${host} couldn't check the sign-in right now. Try again in a moment.`,
+                )
+              : new ProviderError(
+                  'outgoingAuthentication',
+                  `${host} didn't accept the OAuth sign-in for sending mail. Sign in again in the account settings.`,
+                ),
+          )
+        },
+      ),
+    )
+    return
+  }
   // No listed mechanism means nodemailer inferred AUTH (HELO fallback); PLAIN is its default there too.
   const method = offered.length ? passwordMethods.find((m) => offered.includes(m)) : 'PLAIN'
   if (!method)

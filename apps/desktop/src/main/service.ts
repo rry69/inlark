@@ -33,12 +33,15 @@ import {
   type MailProvider,
   type FolderMappings,
   type DiscoveryResult,
+  type OAuthProviderId,
+  type OAuthSignIn,
   type OutgoingMessage,
   type SendResult,
   type SubmissionSummary,
 } from '@inlark/core'
 import { JmapProvider } from '@inlark/jmap'
 import { publicFetch } from './public-fetch'
+import { refreshAccessToken, startOAuth } from './oauth'
 import { remoteImageData } from './remote-image'
 import { SenderAvatarResolver, rasterType } from './sender-avatar'
 import { planMutation, safeUndoUpdates, undoForUpdated, type UndoEntry } from './mail-mutations'
@@ -53,6 +56,10 @@ export type Connection = {
   /** Only present when the outgoing server has its own password. */
   outgoingSecret?: string
   outgoingLocalSecret?: string
+  /** Set for OAuth logins. Only the refresh token is stored, and only in the keyring. */
+  oauthProvider?: OAuthProviderId
+  oauthSecret?: string
+  oauthLocalSecret?: string
   folders?: FolderMappings
   accounts: Account[]
 }
@@ -86,7 +93,21 @@ export function migrateConnections(data: unknown, version: number): Connection[]
 }
 export const CONNECTIONS_VERSION = 2
 
-type Secrets = { password: string; outgoingPassword?: string }
+type Secrets = {
+  password?: string
+  outgoingPassword?: string
+  /** OAuth2 access token, RAM only. Never persisted. */
+  accessToken?: string
+  /** When the RAM token stops being usable. */
+  expiresAt?: string
+}
+/** A completed browser sign-in awaiting `connect`. Holds a refresh token for a short while. */
+type PendingOAuth = {
+  provider: OAuthProviderId
+  accessToken: string
+  refreshToken?: string
+  expiresAt?: string
+}
 type Journal = {
   draftId: string
   accountId: string
@@ -130,6 +151,8 @@ export type ProviderFactory = (input: {
   config: ConnectionConfig
   secrets: Secrets
   name: string
+  /** The OAuth provider whose tokens `secrets.accessToken` came from. */
+  oauthProvider?: OAuthProviderId
   folders?: FolderMappings
   /** A test connection must leave nothing behind on disk. */
   temporary?: boolean
@@ -140,6 +163,9 @@ export type ProviderFactory = (input: {
 export interface ServiceOptions {
   providers?: ProviderFactory
   discover?: (email: string) => Promise<DiscoveryResult>
+  /** Tests only. */
+  refreshToken?: typeof refreshAccessToken
+  openExternal?: (url: string) => Promise<void>
 }
 const errorKind = (error: unknown): DraftErrorKind | undefined =>
   error instanceof ProviderError
@@ -162,6 +188,8 @@ export class MailService {
   private connections: Connection[] = []
   private providers = new Map<string, MailProvider>()
   private sessionSecrets = new Map<string, Secrets>()
+  /** Sign-ins waiting to be attached to a connection. RAM only, cleared on use and on exit. */
+  private pendingOAuth = new Map<string, PendingOAuth>()
   private localDrafts = new Map<string, Draft>()
   private journals = new Map<string, Journal>()
   private staging = new Map<string, StagedAttachment>()
@@ -308,15 +336,19 @@ export class MailService {
   }
   private createProvider(
     id: string,
-    input: Pick<ConnectInput, 'config' | 'name' | 'password' | 'outgoingPassword' | 'folders'>,
+    input: Pick<
+      ConnectInput,
+      'config' | 'name' | 'password' | 'outgoingPassword' | 'folders' | 'accessToken' | 'oauthProvider'
+    >,
     temporary = false,
   ): MailProvider {
     const config = input.config
     if (config.protocol === 'jmap')
       return new JmapProvider({
         serverUrl: config.serverUrl,
-        authorization:
-          'Basic ' + Buffer.from(config.username + ':' + input.password).toString('base64'),
+        authorization: input.accessToken
+          ? 'Bearer ' + input.accessToken
+          : 'Basic ' + Buffer.from(config.username + ':' + (input.password || '')).toString('base64'),
         connectionId: id,
         name: input.name,
       })
@@ -325,8 +357,13 @@ export class MailService {
       connectionId: id,
       config,
       name: input.name,
+      ...(input.oauthProvider ? { oauthProvider: input.oauthProvider } : {}),
       folders: input.folders,
-      secrets: { password: input.password, outgoingPassword: input.outgoingPassword },
+      secrets: {
+        password: input.password,
+        outgoingPassword: input.outgoingPassword,
+        accessToken: input.accessToken,
+      },
       temporary,
       directory: join(this.store.directory, 'index', id),
       readAttachment: this.readStagedAttachment,
@@ -336,9 +373,49 @@ export class MailService {
     if (!this.options.discover) throw new Error('Automatic setup is not available in this build.')
     return this.options.discover(email)
   }
+  /**
+   * Runs the provider's browser sign-in. The tokens stay here; the renderer only receives an ID
+   * it hands back with `testConnection`/`connect`.
+   */
+  beginOAuth = async (provider: OAuthProviderId): Promise<OAuthSignIn> => {
+    const tokens = await startOAuth(provider, {
+      open: (url) => {
+        // A failed browser launch must not abandon a listener the provider is about to call.
+        void (this.options.openExternal || shell.openExternal)(url).catch(() => {})
+      },
+    })
+    const sessionId = randomUUID()
+    this.pendingOAuth.set(sessionId, { provider, ...tokens })
+    // One pending sign-in per user is enough; drop anything older rather than grow without bound.
+    if (this.pendingOAuth.size > 5) this.pendingOAuth.delete(this.pendingOAuth.keys().next().value!)
+    return {
+      sessionId,
+      provider,
+      ...(tokens.expiresAt ? { expiresAt: tokens.expiresAt } : {}),
+    }
+  }
+  /** Resolves the token a sign-in holds, without consuming it. */
+  private peekOAuth(sessionId?: string): PendingOAuth | undefined {
+    return sessionId ? this.pendingOAuth.get(sessionId) : undefined
+  }
+  /** The token to use now: a fresh sign-in first, else the caller's own token. */
+  private oauthFor(input: ConnectInput): PendingOAuth | undefined {
+    const pending = this.peekOAuth(input.oauthSessionId)
+    if (pending) return pending
+    if (!input.accessToken) return undefined
+    return {
+      provider: input.oauthProvider || 'google',
+      accessToken: input.accessToken,
+    }
+  }
   /** Signs in to each server separately and reports each result. Nothing is saved or sent. */
   testConnection = async (input: ConnectInput): Promise<ConnectionTest> => {
-    const provider = this.createProvider('test-' + randomUUID(), input, true)
+    const oauth = this.oauthFor(input)
+    const provider = this.createProvider(
+      'test-' + randomUUID(),
+      { ...input, accessToken: oauth?.accessToken, oauthProvider: oauth?.provider },
+      true,
+    )
     const result: ConnectionTest = { incoming: { ok: false } }
     try {
       const [accounts] = await Promise.allSettled([provider.connect()])
@@ -361,7 +438,12 @@ export class MailService {
     }
   }
   /** `reconnecting` restores a saved login, so labels and names edited since then are kept. */
-  connect = async (input: ConnectInput, reconnecting = false): Promise<Account[]> => {
+  connect = async (
+    input: ConnectInput,
+    reconnecting = false,
+    /** Set when a restored OAuth token was minted from a refresh token. */
+    expiresAt?: string,
+  ): Promise<Account[]> => {
     const id = input.connectionId || randomUUID()
     const previous = this.connections.find((c) => c.id === id)
     if (previous && previous.config.protocol !== input.config.protocol)
@@ -370,7 +452,14 @@ export class MailService {
       input.config.protocol === 'imap' && !input.config.outgoingSameCredentials
         ? input.outgoingPassword
         : undefined
-    const provider = this.createProvider(id, { ...input, outgoingPassword })
+    const oauth = this.oauthFor(input)
+    const provider = this.createProvider(id, {
+      ...input,
+      outgoingPassword,
+      ...(oauth
+        ? { accessToken: oauth.accessToken, oauthProvider: oauth.provider }
+        : { accessToken: undefined, oauthProvider: undefined }),
+    })
     let accounts: Account[]
     let folders = input.folders ?? previous?.folders
     try {
@@ -414,6 +503,18 @@ export class MailService {
         input.remember && !encrypted ? value : undefined
       const secret = keep(input.password)
       const outgoingSecret = keep(outgoingPassword)
+      // Only the refresh token is written to disk; the access token never leaves RAM.
+      const refreshSecret = oauth?.refreshToken ? keep(oauth.refreshToken) : undefined
+      const oauthSaved = oauth
+        ? {
+            oauthProvider: oauth.provider,
+            // A reconnect mints a fresh access token, so the stored refresh token stays as it is.
+            oauthSecret: refreshSecret ?? previous?.oauthSecret,
+            oauthLocalSecret: oauth.refreshToken
+              ? local(oauth.refreshToken, refreshSecret)
+              : previous?.oauthLocalSecret,
+          }
+        : {}
       const connection: Connection = {
         id,
         name: input.name,
@@ -422,11 +523,13 @@ export class MailService {
         localSecret: local(input.password, secret),
         outgoingSecret,
         outgoingLocalSecret: outgoingPassword ? local(outgoingPassword, outgoingSecret) : undefined,
+        ...oauthSaved,
         folders,
         accounts,
       }
       this.connections = [...this.connections.filter((c) => c.id !== id), connection]
       await this.saveConnections()
+      if (input.oauthSessionId) this.pendingOAuth.delete(input.oauthSessionId)
     } catch (error) {
       provider.dispose()
       void provider.close?.()
@@ -439,7 +542,12 @@ export class MailService {
       await old.close?.()
     }
     this.providers.set(id, provider)
-    this.sessionSecrets.set(id, { password: input.password, outgoingPassword })
+    this.sessionSecrets.set(id, {
+      password: input.password,
+      outgoingPassword,
+      accessToken: oauth?.accessToken,
+      expiresAt: oauth?.expiresAt || expiresAt,
+    })
     this.accounts = [...this.accounts.filter((a) => a.connectionId !== id), ...accounts]
     provider.subscribe((event) => {
       if (event.type === 'indexing' && event.accountId && event.indexing) {
@@ -474,22 +582,52 @@ export class MailService {
       this.emit({ type: 'accounts', accounts: this.accounts })
     }, 1000)
   }
-  private secrets(connection: Connection): Secrets | undefined {
+  /**
+   * The credentials to restore a connection with. An OAuth connection always mints a new
+   * access token from its stored refresh token, so a restart never reuses a stale token.
+   */
+  private async secrets(connection: Connection): Promise<Secrets | undefined> {
     const session = this.sessionSecrets.get(connection.id)
     if (session) return session
     const password = connection.secret ? decryptSecret(connection.secret) : connection.localSecret
-    if (!password) return undefined
     const outgoingPassword = connection.outgoingSecret
       ? decryptSecret(connection.outgoingSecret)
       : connection.outgoingLocalSecret
+    if (connection.oauthProvider) {
+      const refreshToken = connection.oauthSecret
+        ? decryptSecret(connection.oauthSecret)
+        : connection.oauthLocalSecret
+      if (!refreshToken) throw new Error('Sign in again to reconnect this account.')
+      const tokens = await (this.options.refreshToken || refreshAccessToken)(
+        connection.oauthProvider,
+        refreshToken,
+      )
+      // A rotated refresh token replaces the stored one before anything else can fail.
+      if (tokens.refreshToken && tokens.refreshToken !== refreshToken) {
+        connection.oauthSecret = secureStorageAvailable()
+          ? encryptSecret(tokens.refreshToken)
+          : undefined
+        connection.oauthLocalSecret = connection.oauthSecret ? undefined : tokens.refreshToken
+        await this.saveConnections()
+      }
+      return { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt }
+    }
+    if (!password) return undefined
     return { password, outgoingPassword }
+  }
+  /** Whether a stored OAuth token has run out; then the connection needs a fresh one. */
+  private expired(connection: Connection) {
+    const expiresAt = this.sessionSecrets.get(connection.id)?.expiresAt
+    if (!expiresAt) return false
+    const at = Date.parse(expiresAt)
+    return Number.isFinite(at) && at <= Date.now()
   }
   reconnect = async (id: string): Promise<void> => {
     const connection = this.connections.find((c) => c.id === id)
     if (!connection) throw new Error('Connection not found.')
     this.status(id, 'connecting')
     try {
-      const secrets = this.secrets(connection)
+      const secrets = await this.secrets(connection)
       if (!secrets) throw new Error('This was a session-only login. Sign in again to reconnect.')
       await this.connect(
         {
@@ -497,10 +635,17 @@ export class MailService {
           name: connection.name,
           password: secrets.password,
           outgoingPassword: secrets.outgoingPassword,
-          remember: !!(connection.secret || connection.localSecret),
+          remember: this.remembered(connection),
           connectionId: id,
+          ...(connection.oauthProvider
+            ? {
+                oauthProvider: connection.oauthProvider,
+                ...(secrets.accessToken ? { accessToken: secrets.accessToken } : {}),
+              }
+            : {}),
         },
         true,
+        secrets.expiresAt,
       )
     } catch (error) {
       this.status(
@@ -514,6 +659,15 @@ export class MailService {
       throw error
     }
   }
+  /** A connection is remembered when any of its credentials was stored, OAuth or password. */
+  private remembered(connection: Connection) {
+    return !!(
+      connection.secret ||
+      connection.localSecret ||
+      connection.oauthSecret ||
+      connection.oauthLocalSecret
+    )
+  }
   connectionSettings = async (connectionId: string): Promise<ConnectionSettings> => {
     const connection = this.connections.find((c) => c.id === connectionId)
     if (!connection) throw new Error('Connection not found.')
@@ -521,8 +675,9 @@ export class MailService {
       connectionId,
       name: connection.name,
       config: connection.config,
-      remember: !!(connection.secret || connection.localSecret),
+      remember: this.remembered(connection),
       folders: connection.folders,
+      ...(connection.oauthProvider ? { oauthProvider: connection.oauthProvider } : {}),
     }
   }
   folderMappings = async (accountId: string) =>
@@ -1293,6 +1448,103 @@ export class MailService {
         'Delivery is still unconfirmed. Check Sent or the server before creating a replacement message.',
     }
   }
+  /**
+   * Retries the submission of an unconfirmed send with the same Message-ID the first attempt
+   * used, after proving the server does not already hold that attempt. Anything already
+   * resolved delegates to reconcile. Additive: send() and reconcile() are untouched.
+   */
+  retrySend = async (id: string): Promise<SendResult> => {
+    const journal = this.journals.get(id)
+    if (!journal) throw new Error('No send attempt found.')
+    if (journal.dismissed) throw new Error('This message was dismissed. Create a new draft.')
+    if (journal.state !== 'uncertain') return this.reconcile(id)
+    const draft = this.localDrafts.get(id)
+    if (!draft)
+      throw new Error('The draft for this message is gone. Create a replacement instead.')
+    if (this.busyDrafts.has(id))
+      throw new Error('This message is still being processed. Try again in a moment.')
+    const { provider, account } = this.provider(journal.accountId)
+    const existing = await this.outgoingMessage(journal).catch(() => undefined)
+    if (
+      existing &&
+      (await this.guard(journal.accountId, (p, a) => p.submissionExists(a, existing)).catch(
+        () => false,
+      ))
+    ) {
+      journal.state = 'sent'
+      await this.persistJournal()
+      await this.completeDraft(draft)
+      this.emit({ type: 'changed', accountId: journal.accountId })
+      return {
+        status: 'sent',
+        message: 'Delivery confirmed. The server already held this message.',
+        sentCopy: 'filed',
+      }
+    }
+    this.busyDrafts.add(id)
+    try {
+      const uploaded = await this.uploadDraft(draft)
+      const outgoing = await provider.prepareSubmission(
+        account,
+        uploaded,
+        journal.messageId || journal.draftId + '@inlark.local',
+      )
+      journal.emailId = outgoing.emailId
+      journal.envelope = outgoing.envelope
+      if (outgoing.mime) {
+        await this.writeMime(id, outgoing.mime)
+        journal.mime = true
+      }
+      if (provider.capabilities.sentCopy === 'client' && !journal.sentCopy)
+        journal.sentCopy = 'pending'
+      journal.state = 'submitting'
+      journal.accepted = undefined
+      journal.rejected = undefined
+      await this.persistJournal()
+      this.localDrafts.set(id, { ...uploaded, status: 'sending' })
+      await this.persistDrafts()
+      const outcome = await this.guard(account.id, (p, a) =>
+        p.submit(a, outgoing, draft.identityId),
+      )
+      this.outgoing(account.connectionId, undefined)
+      journal.accepted = outcome.accepted
+      journal.rejected = outcome.rejected
+      journal.state = outcome.rejected.length ? 'partial' : 'sent'
+      await this.persistJournal()
+      if (journal.sentCopy) await this.fileSentCopy(journal, outgoing)
+      if (journal.state === 'sent') await this.completeDraft(uploaded)
+      else this.localDrafts.set(id, { ...uploaded, status: 'sent' })
+      await this.persistDrafts()
+      this.emit({ type: 'changed', accountId: draft.accountId })
+      return this.sendResult(journal, uploaded)
+    } catch (error) {
+      const ambiguous = !(
+        error instanceof ProviderError && definiteSubmissionCodes.includes(error.code)
+      )
+      journal.state = ambiguous ? 'uncertain' : 'rejected'
+      if (!ambiguous) {
+        journal.sentCopy = undefined
+        await this.removeMime(id)
+        journal.mime = undefined
+      }
+      await this.persistJournal()
+      this.localDrafts.set(id, {
+        ...draft,
+        status: ambiguous ? 'uncertain' : 'error',
+        error: friendlyError(error),
+        errorKind: ambiguous ? undefined : errorKind(error),
+      })
+      await this.persistDrafts()
+      if (ambiguous)
+        return {
+          status: 'uncertain',
+          message: 'Still unconfirmed. Your draft is safe. Check Sent before trying again.',
+        }
+      throw error
+    } finally {
+      this.busyDrafts.delete(id)
+    }
+  }
   private summaries(): SubmissionSummary[] {
     return [...this.journals.values()]
       .filter((j) => !j.dismissed)
@@ -1442,8 +1694,63 @@ export class MailService {
       if (error) throw new Error('The file was saved, but no application could open it.')
     }
   }
-  inlineImage = async (accountId: string, attachment: Attachment): Promise<string> => {
-    if (!/^image\/(png|jpeg|gif|webp|avif)$/i.test(attachment.type) || attachment.size > 10_000_000)
+  /**
+   * Returns an attachment as a data URL for in-app preview. Only images, PDFs and text are
+   * previewable, and only under the cap; anything else must use the OS viewer via `attachment`.
+   * Additive: the existing save-and-open flow is untouched.
+   */
+  previewAttachment = async (accountId: string, attachment: Attachment): Promise<string> => {
+    if (attachment.size > 15_000_000)
+      throw new Error('This file is too large to preview. Open it with an app instead.')
+    const previewable =
+      /^image\/(png|jpeg|gif|webp|avif|svg\+xml)$/i.test(attachment.type) ||
+      attachment.type === 'application/pdf' ||
+      attachment.type.startsWith('text/')
+    if (!previewable)
+      throw new Error('This file type cannot be previewed. Open it with an app instead.')
+    const bytes = await this.guard(accountId, (p, a) => p.download(a, attachment))
+    if (bytes.length > 15_000_000)
+      throw new Error('This file is too large to preview. Open it with an app instead.')
+    return 'data:' + attachment.type + ';base64,' + Buffer.from(bytes).toString('base64')
+  }
+  /**
+   * Saves every attachment of a message with a single folder choice. Files are never
+   * overwritten: a colliding name gets a numbered suffix. Additive: per-file save is untouched.
+   */
+  saveAttachments = async (
+    accountId: string,
+    attachments: Attachment[],
+  ): Promise<{ saved: number; skipped: string[] }> => {
+    if (!attachments.length) return { saved: 0, skipped: [] }
+    if (attachments.length > 100) throw new Error('Too many attachments to save at once.')
+    const picked = await dialog.showOpenDialog({
+      title: 'Save all attachments',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (picked.canceled || !picked.filePaths[0]) return { saved: 0, skipped: [] }
+    const directory = picked.filePaths[0]
+    const numbered = (name: string, n: number) =>
+      name.replace(/(\.[^.]+)?$/, (suffix) => ' (' + n + ')' + suffix)
+    const skipped: string[] = []
+    let saved = 0
+    const used = new Set<string>()
+    for (const attachment of attachments) {
+      try {
+        const bytes = await this.guard(accountId, (p, a) => p.download(a, attachment))
+        const name = basename(attachment.name) || 'attachment'
+        let target = join(directory, name)
+        for (let n = 2; used.has(target.toLowerCase()) || (await stat(target).catch(() => null)); n++)
+          target = join(directory, numbered(name, n))
+        used.add(target.toLowerCase())
+        await writeFile(target, bytes, { mode: 0o600 })
+        saved++
+      } catch {
+        skipped.push(attachment.name)
+      }
+    }
+    return { saved, skipped }
+  }
+  inlineImage = async (accountId: string, attachment: Attachment): Promise<string> => {    if (!/^image\/(png|jpeg|gif|webp|avif)$/i.test(attachment.type) || attachment.size > 10_000_000)
       throw new Error('Unsupported inline image.')
     const bytes = await this.guard(accountId, (p, a) => p.download(a, attachment))
     return 'data:' + attachment.type + ';base64,' + Buffer.from(bytes).toString('base64')
@@ -1597,12 +1904,17 @@ export class MailService {
         const connected = this.accounts.some(
           (a) => a.connectionId === c.id && a.status === 'connected',
         )
+        // An expired OAuth token is no better than no token: get a new one before reading mail.
+        if (this.expired(c)) {
+          this.sessionSecrets.delete(c.id)
+          await this.reconnect(c.id)
+          return
+        }
         // Rediscover advertised endpoints after outages or session changes. Never replay writes.
         if (this.providers.has(c.id) && connected) {
           await this.refreshConnection(c.id)
           await this.retrySentCopies(c.id)
-        } else if (c.secret || c.localSecret || this.sessionSecrets.has(c.id))
-          await this.reconnect(c.id)
+        } else if (this.remembered(c) || this.sessionSecrets.has(c.id)) await this.reconnect(c.id)
       }),
     )
     await this.syncPendingDrafts()
@@ -1610,6 +1922,8 @@ export class MailService {
   dispose() {
     if (this.timer) clearInterval(this.timer)
     if (this.indexingEmit) clearTimeout(this.indexingEmit)
+    // Access and refresh tokens are RAM only; nothing survives the process either way.
+    this.pendingOAuth.clear()
     for (const provider of this.providers.values()) {
       provider.dispose()
       void provider.close?.()

@@ -247,6 +247,27 @@ describe('durable mail operations', () => {
     expect((await service.reconcile(draft.id)).status).toBe('sent')
     expect((await service.drafts())[0].status).toBe('sent')
   })
+  it('retries an unconfirmed send after proving the server missed it', async () => {
+    const submit = vi
+      .spyOn(JmapProvider.prototype, 'submit')
+      .mockRejectedValueOnce(new JmapError('network', 'Response lost'))
+      .mockResolvedValue({ accepted: ['recipient@example.com'], rejected: [] })
+    vi.spyOn(JmapProvider.prototype, 'submissionExists').mockResolvedValue(false)
+    expect((await service.send(draft)).status).toBe('uncertain')
+    expect((await service.retrySend(draft.id)).status).toBe('sent')
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect((await service.drafts())[0].status).toBe('sent')
+  })
+  it('confirms instead of resending when the server already holds the attempt', async () => {
+    const submit = vi
+      .spyOn(JmapProvider.prototype, 'submit')
+      .mockRejectedValue(new JmapError('network', 'Response lost'))
+    vi.spyOn(JmapProvider.prototype, 'submissionExists').mockResolvedValue(true)
+    await service.send(draft)
+    expect((await service.retrySend(draft.id)).status).toBe('sent')
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect((await service.drafts())[0].status).toBe('sent')
+  })
   it('retains the draft after an explicit server rejection and allows a deliberate retry', async () => {
     const submit = vi
       .spyOn(JmapProvider.prototype, 'submit')

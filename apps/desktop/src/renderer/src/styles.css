@@ -3777,6 +3777,33 @@ fieldset.compose-format:disabled {
 .setup-notice {
   margin: 10px 0 4px;
 }
+.setup-oauth {
+  margin-bottom: 14px;
+}
+.setup-provider-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.setup-oauth-button {
+  width: 100%;
+  justify-content: center;
+}
+.setup-oauth-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.setup-oauth-done svg {
+  color: var(--green);
+  flex-shrink: 0;
+}
+.setup-oauth .field-hint {
+  margin-top: 8px;
+}
 .protocol-tag {
   display: inline-flex;
   align-items: center;
@@ -4284,4 +4311,91 @@ fieldset.compose-format:disabled {
 .button-ghost[aria-disabled='true']:hover {
   background: transparent;
   color: var(--secondary);
+}
+/* A sidebar destination under a dragged conversation. */
+.nav-item.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* "Download all" row above the attachment cards of one message. */
+.attachment-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+.attachment-list-header .text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* In-app attachment preview. */
+.attachment-preview {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.attachment-preview img {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.attachment-preview iframe {
+  display: block;
+  width: 100%;
+  min-height: 55vh;
+  border: 0;
+  background: #fff;
+}
+.attachment-preview pre {
+  margin: 0;
+  padding: 14px 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.attachment-preview-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Print (and "Save as PDF") shows only the open conversation. */
+@media print {
+  .sidebar,
+  .reader-toolbar,
+  .reply-panel,
+  .toast,
+  .link-status,
+  .update-notice,
+  [role='dialog'],
+  .command-palette {
+    display: none !important;
+  }
+  .app-shell,
+  .main-content,
+  .reader-page,
+  .reader-scroll,
+  .reader-content {
+    display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .reader-scroll {
+    padding: 0;
+  }
+  .message-card {
+    break-inside: avoid;
+  }
 }

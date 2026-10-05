@@ -1,5 +1,6 @@
 import { Archive, Mail, MailOpen, Paperclip, Star, Trash2 } from '@inlark/ui/icons'
 import { Checkbox, IconButton } from '@inlark/ui'
+import type { DragEvent } from 'react'
 import type { Account, Conversation } from '@inlark/core'
 import { shortDate } from './mail-date'
 import { SenderAvatar } from './SenderAvatar'
@@ -26,6 +27,7 @@ export function ConversationRow({
   onArchive,
   onTrash,
   onToggleRead,
+  onDragStart,
 }: {
   conversation: Conversation
   account?: Account
@@ -40,6 +42,8 @@ export function ConversationRow({
   onArchive?: () => void
   onTrash?: () => void
   onToggleRead: () => void
+  /** Dragging a row carries its conversation key; the sidebar folders accept the drop. */
+  onDragStart?: (event: DragEvent) => void
 }) {
   const keys = useShortcutText()
   const moveLimit = actionLimit(a, 'move')
@@ -57,6 +61,8 @@ export function ConversationRow({
       aria-selected={selected}
       onClick={onOpen}
       onMouseDown={onFocus}
+      draggable={!!onDragStart && !busy}
+      onDragStart={onDragStart}
     >
       <div className="row-selector" role="gridcell" onClick={(event) => event.stopPropagation()}>
         <Checkbox

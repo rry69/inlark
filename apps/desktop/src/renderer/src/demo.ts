@@ -550,6 +550,11 @@ export const demoAPI: DesktopMailAPI = {
     await pause(900)
     return demoTest(input)
   },
+  beginOAuth: async (provider) => {
+    // Demo only: no browser, no provider, no token anywhere.
+    await pause(700)
+    return { sessionId: 'demo-oauth', provider, expiresAt: new Date(Date.now() + 3600_000).toISOString() }
+  },
   connect: async (input) => {
     await pause(600)
     const test = demoTest(input)
@@ -917,6 +922,16 @@ export const demoAPI: DesktopMailAPI = {
       }
     return { status: 'sent', message: 'This message has already been sent.' }
   },
+  retrySend: async (draftId) => {
+    await pause(800)
+    const submission = submissions.find((s) => s.draftId === draftId)
+    if (!submission) throw new Error('No send attempt found.')
+    if (submission.state !== 'uncertain')
+      return { status: 'sent', message: 'This message has already been sent.' }
+    submissions = submissions.filter((s) => s.draftId !== draftId)
+    emitSubmissions()
+    return { status: 'sent', message: 'Demo · no email was sent.', sentCopy: 'filed' }
+  },
   submissions: async () => [...submissions],
   retrySentCopy: async (draftId) => {
     await pause(500)
@@ -964,6 +979,12 @@ export const demoAPI: DesktopMailAPI = {
     throw new Error('Native file attachments are available in the desktop app.')
   },
   attachment: async () => {
+    throw new Error('Attachment downloads require the desktop app.')
+  },
+  previewAttachment: async () => {
+    throw new Error('Attachment previews require the desktop app.')
+  },
+  saveAttachments: async () => {
     throw new Error('Attachment downloads require the desktop app.')
   },
   inlineImage: async () => '',

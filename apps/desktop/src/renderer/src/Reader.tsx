@@ -27,12 +27,14 @@ import {
   ShieldCheck,
   Check,
   MailMinus,
+  Printer,
 } from '@inlark/ui/icons'
 import { Tooltip } from '@base-ui/react/tooltip'
-import { Button, IconButton, Dropdown, MenuItem, Spinner } from '@inlark/ui'
+import { Button, IconButton, Dropdown, MenuItem, Modal, Spinner } from '@inlark/ui'
 import {
   friendlyError,
   type Account,
+  type Attachment,
   type Message,
   type Settings,
   type MailAction,
@@ -548,8 +550,104 @@ function UnsubscribeButton({ state, onClick }: { state: UnsubscribeState; onClic
     </Tooltip.Root>
   )
 }
-const attachmentIcon = (type: string, name: string) =>
-  type.startsWith('image/')
+/** In-app preview for images, PDFs and text. Anything else opens with an OS app. */
+function AttachmentPreview({
+  accountId,
+  attachment,
+  notify,
+  onClose,
+}: {
+  accountId: string
+  attachment: Attachment
+  notify: (message: string, tone?: 'error' | 'info') => void
+  onClose: () => void
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState('')
+  useEffect(() => {
+    let active = true
+    setUrl(null)
+    setFailed('')
+    void api.previewAttachment(accountId, attachment).then(
+      (data) => {
+        if (active) setUrl(data)
+      },
+      (e: unknown) => {
+        if (active) setFailed(friendlyError(e))
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [accountId, attachment])
+  const kind = attachment.type === 'application/pdf' ? 'pdf' : attachment.type.startsWith('image/') ? 'image' : 'text'
+  // Text previews render from the data URL directly, capped so huge logs stay readable.
+  const text =
+    kind === 'text' && url
+      ? (() => {
+          try {
+            const bytes = Uint8Array.from(atob(url.slice(url.indexOf(',') + 1)), (c) =>
+              c.charCodeAt(0),
+            )
+            const decoded = new TextDecoder().decode(bytes)
+            return decoded.length > 200_000
+              ? decoded.slice(0, 200_000) + '\n… (preview truncated)'
+              : decoded
+          } catch {
+            return null
+          }
+        })()
+      : null
+  const openWithApp = () =>
+    void api
+      .attachment(accountId, attachment, true)
+      .catch((e) => notify(friendlyError(e), 'error'))
+  const save = () =>
+    void api
+      .attachment(accountId, attachment, false)
+      .catch((e) => notify(friendlyError(e), 'error'))
+  return (
+    <Modal
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+      title={attachment.name}
+      description={
+        attachment.type + ' · ' + formatBytes(attachment.size)
+      }
+    >
+      <div className="attachment-preview">
+        {failed ? (
+          <p className="modal-body-text">
+            {failed} You can still open it with an app on your device.
+          </p>
+        ) : !url || (kind === 'text' && text === null) ? (
+          <div className="attachment-preview-loading" role="status">
+            <Spinner size={16} />
+            Loading preview…
+          </div>
+        ) : kind === 'image' ? (
+          <img src={url} alt={attachment.name} />
+        ) : kind === 'pdf' ? (
+          <iframe src={url} title={'Preview of ' + attachment.name} sandbox="allow-same-origin" />
+        ) : (
+          <pre>{text}</pre>
+        )}
+      </div>
+      <div className="modal-actions">
+        <Button onClick={save}>
+          <Download size={14} />
+          Save
+        </Button>
+        <Button variant="primary" onClick={openWithApp}>
+          Open with app
+        </Button>
+      </div>
+    </Modal>
+  )
+}
+const attachmentIcon = (type: string, name: string) =>  type.startsWith('image/')
     ? FileImage
     : /zip|compressed|tar|gzip|x-7z|rar/.test(type) || /\.(zip|tar|gz|7z|rar)$/i.test(name)
       ? FileArchive
@@ -621,6 +719,36 @@ export function Reader({
       return next
     })
   const [showAll, setShowAll] = useState(false)
+  const [preview, setPreview] = useState<{ message: Message; attachment: Attachment } | null>(
+    null,
+  )
+  /** Print opens the system dialog, where "Save as PDF" exports the conversation. */
+  const printConversation = () => {
+    setShowAll(true)
+    setExpanded(new Set(messages.map((m) => m.id)))
+    // Let React paint the expanded thread before the dialog captures the page.
+    requestAnimationFrame(() => requestAnimationFrame(() => window.print()))
+  }
+  const downloadAll = async (message: Message) => {
+    const files = (message.attachments || []).filter((a) => !a.cid || a.disposition === 'attachment')
+    if (!files.length) return
+    try {
+      const result = await api.saveAttachments(account.id, files)
+      if (result.saved && !result.skipped.length)
+        notify(
+          result.saved === 1 ? 'Attachment saved.' : result.saved + ' attachments saved.',
+        )
+      else if (result.saved)
+        notify(
+          result.saved + ' saved · could not save ' + result.skipped.join(', ') + '.',
+          'error',
+        )
+      else if (result.saved === 0 && !result.skipped.length) return // Folder choice cancelled.
+      else notify('Could not save ' + result.skipped.join(', ') + '.', 'error')
+    } catch (e) {
+      notify(friendlyError(e), 'error')
+    }
+  }
   if (!last) return null
   // Long threads show their first message and the latest few; the middle folds into one row.
   const folded =
@@ -683,6 +811,9 @@ export function Reader({
           onClick={() => onAction(starred ? 'unstar' : 'star')}
         >
           <Star size={16} className={starred ? 'starred' : ''} />
+        </IconButton>
+        <IconButton label="Print conversation" onClick={printConversation}>
+          <Printer size={16} />
         </IconButton>
         <Dropdown
           trigger={
@@ -880,18 +1011,30 @@ export function Reader({
                       />
                       {attachments.length > 0 && (
                         <div className="attachment-list">
+                          {attachments.length > 1 && (
+                            <div className="attachment-list-header">
+                              <span>
+                                {attachments.length} attachments ·{' '}
+                                {formatBytes(attachments.reduce((n, a) => n + a.size, 0))}
+                              </span>
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => void downloadAll(message)}
+                              >
+                                <Download size={13} />
+                                Download all
+                              </button>
+                            </div>
+                          )}
                           {attachments.map((attachment) => {
                             const Icon = attachmentIcon(attachment.type, attachment.name)
                             return (
                               <div className="attachment-card" key={attachment.blobId}>
                                 <button
                                   className="attachment-open"
-                                  title={'Open ' + attachment.name}
-                                  onClick={() =>
-                                    void api
-                                      .attachment(account.id, attachment, true)
-                                      .catch((e) => notify(friendlyError(e), 'error'))
-                                  }
+                                  title={'Preview ' + attachment.name}
+                                  onClick={() => setPreview({ message, attachment })}
                                 >
                                   <span className="attachment-icon">
                                     <Icon size={18} strokeWidth={1.6} />
@@ -951,6 +1094,14 @@ export function Reader({
         <div className="link-status" aria-hidden="true">
           {link}
         </div>
+      )}
+      {preview && (
+        <AttachmentPreview
+          accountId={account.id}
+          attachment={preview.attachment}
+          notify={notify}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   )

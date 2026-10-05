@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs'
 import { createServer, type AddressInfo, type Socket } from 'node:net'
 import { SMTPServer, type SMTPServerOptions } from 'smtp-server'
 import { composeMime } from '../packages/imap/src/mime'
-import { smtpOptions, submitSmtp, verifySmtp, type SmtpSettings } from '../packages/imap/src/smtp'
+import {
+  smtpOptions,
+  submitSmtp,
+  verifySmtp,
+  xoauth2InitialResponse,
+  type SmtpSettings,
+} from '../packages/imap/src/smtp'
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/tls/${name}`, import.meta.url))
 const ca = fixture('ca.crt')
@@ -12,6 +18,7 @@ const untrusted = { key: fixture('untrusted.key'), cert: fixture('untrusted.crt'
 const password = 'correct horse battery'
 
 type Handlers = Pick<SMTPServerOptions, 'onRcptTo' | 'onData' | 'onMailFrom'>
+const accessToken = 'ya29.a0-token-value'
 const servers: (() => Promise<void>)[] = []
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((close) => close()))
@@ -20,6 +27,7 @@ afterEach(async () => {
 async function start(options: Partial<SMTPServerOptions> = {}) {
   const log = {
     auth: [] as string[],
+    tokens: [] as string[],
     names: [] as string[],
     mailFrom: [] as string[],
     rcptTo: [] as string[],
@@ -32,7 +40,12 @@ async function start(options: Partial<SMTPServerOptions> = {}) {
     ...trusted,
     onAuth(auth, session, callback) {
       log.auth.push(auth.username ?? '')
+      log.tokens.push(auth.accessToken || '')
       log.names.push(session.hostNameAppearsAs)
+      if (auth.method === 'XOAUTH2')
+        return auth.accessToken === accessToken
+          ? callback(null, { user: auth.username ?? '' })
+          : callback(new Error('Invalid access token'))
       if (auth.username === 'user' && auth.password === password) callback(null, { user: 'user' })
       else callback(new Error('Invalid username or password'))
     },
@@ -182,6 +195,39 @@ describe('SMTP submission', () => {
     await new Promise<void>((resolve) => closed.close(() => resolve()))
     const error = await failure(verifySmtp(settings(port)))
     expect(error.code).toBe('outgoingNetwork')
+  })
+
+  it('signs in with XOAUTH2 instead of a password when a token is given', async () => {
+    const { port, log } = await start({ secure: true, authMethods: ['XOAUTH2'] })
+    await verifySmtp(settings(port, { accessToken, password: 'wrong' }))
+    expect(log.tokens).toEqual([accessToken])
+    expect(log.auth).toEqual(['user'])
+    const outcome = await submitSmtp(
+      settings(port, { accessToken }),
+      envelope(),
+      await message(),
+    )
+    expect(outcome.accepted).toEqual(['you@example.test'])
+    expect(log.mailFrom).toEqual(['me@example.test'])
+  })
+
+  it('reports a rejected OAuth token as an outgoing authentication failure', async () => {
+    const { port, log } = await start({ secure: true, authMethods: ['XOAUTH2'] })
+    const error = await failure(verifySmtp(settings(port, { accessToken: 'stale' })))
+    expect(error.code).toBe('outgoingAuthentication')
+    expect(error.message).not.toContain('stale')
+    expect(log.mailFrom).toEqual([])
+  })
+
+  it('refuses to send when the server offers no OAuth mechanism', async () => {
+    const { port, log } = await start({ secure: true })
+    const error = await failure(
+      submitSmtp(settings(port, { accessToken }), envelope(), await message()),
+    )
+    expect(error.code).toBe('outgoingNetwork')
+    expect(error.message).toMatch(/OAuth/)
+    expect(log.auth).toEqual([])
+    expect(log.mailFrom).toEqual([])
   })
 
   it('verifies without ever starting a message', async () => {
