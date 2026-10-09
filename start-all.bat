@@ -1,8 +1,7 @@
 @echo off
 REM Inlark - SATU FILE UNTUK SEMUA SERVICE (double-click 1x, tidak perlu terminal lain)
 REM Cara pakai: double-click file ini. Ctrl+C 1x mematikan semuanya.
-REM Isi: 0) Muat Client ID Google dari apps\desktop\.env.local
-REM      1) Desktop Electron (pnpm dev)  2) Desktop Web (port 5174)  3) Marketing Astro
+REM Isi: 0) Desktop Electron (pnpm dev)  1) Desktop Web (port 5174)  2) Marketing Astro
 
 title Inlark - Semua Service (1 Jendela)
 cd /d "%~dp0"
@@ -13,16 +12,6 @@ if errorlevel 1 (
   echo Install Node LTS + pnpm dulu, lalu jalankan lagi.
   pause
   exit /b 1
-)
-
-REM Muat env lokal agar Sign in with Google langsung aktif (tanpa setx / terminal baru)
-if exist "apps\desktop\.env.local" (
-  for /f "usebackq eol=# tokens=1,* delims==" %%A in ("apps\desktop\.env.local") do (
-    if not "%%A"=="" if not "%%B"=="" set "%%A=%%B"
-  )
-  echo [OK] env lokal dimuat dari apps\desktop\.env.local
-) else (
-  echo [WARN] apps\desktop\.env.local tidak ada, OAuth Google nonaktif.
 )
 
 echo.

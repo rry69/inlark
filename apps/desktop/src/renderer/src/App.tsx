@@ -157,7 +157,8 @@ export function App() {
     localStorage.getItem('mail-density') === 'comfortable' ? 'comfortable' : 'compact',
   )
   const [settingsOpen, setSettingsOpen] = useState(false),
-    [settingsTab, setSettingsTab] = useState('general')
+    [settingsTab, setSettingsTab] = useState('general'),
+    [settingsSetupMode, setSettingsSetupMode] = useState<'add' | undefined>(undefined)
   const [composer, setComposer] = useState<Draft>(),
     [paletteOpen, setPaletteOpen] = useState(false),
     [help, setHelp] = useState(false)
@@ -906,8 +907,9 @@ export function App() {
       fail(e)
     }
   }
-  const openSettings = (tab = 'general') => {
+  const openSettings = (tab = 'general', setupMode?: 'add') => {
     setSettingsTab(tab)
+    setSettingsSetupMode(setupMode)
     setSettingsOpen(true)
   }
   const focusSearch = () => {
@@ -1490,14 +1492,16 @@ export function App() {
         hasServerDrafts={mailboxCounts.drafts > 0}
         sendingIssues={pendingSends.length}
         unreadCount={mailboxCounts.unread}
-        accountUnread={mailboxCounts.byAccount}
         collapsed={collapsed}
+        hiddenViews={settings.hiddenViews}
+        hideFolders={settings.hideFolders}
         onToggleCollapsed={() => setCollapsed(!collapsed)}
         onSearch={() => setPaletteOpen(true)}
         onCompose={() => void compose()}
         onNavigate={go}
         onSettings={(tab) => {
           setSettingsTab(tab)
+          setSettingsSetupMode(undefined)
           setSettingsOpen(true)
         }}
         onFolderAction={(operation, accountId, folder) =>
@@ -1616,6 +1620,21 @@ export function App() {
                           )}
                         </MenuItem>
                       ))}
+                      <div className="account-menu-divider" />
+                      <MenuItem onClick={() => openSettings('accounts')}>
+                        <SettingsIcon size={15} />
+                        <span className="account-menu-label">
+                          <strong>Manage accounts</strong>
+                          <small>Settings</small>
+                        </span>
+                      </MenuItem>
+                      <MenuItem onClick={() => openSettings('accounts', 'add')}>
+                        <Plus size={15} />
+                        <span className="account-menu-label">
+                          <strong>Add account</strong>
+                          <small>Connect another mailbox</small>
+                        </span>
+                      </MenuItem>
                     </div>
                   </Dropdown>
                 </div>
@@ -1779,6 +1798,7 @@ export function App() {
             )}
             {!!selected.size && view !== 'drafts' && (
               <div className="selection-bar" role="region" aria-label="Selection actions">
+                {busy && <span className="selection-progress" aria-hidden="true" />}
                 <div className="selection-summary">
                   <span className="selection-count" role="status">
                     {selectedCount.toLocaleString()} selected
@@ -2172,13 +2192,17 @@ export function App() {
         {settingsOpen && (
           <SettingsPanel
             open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
+            onClose={() => {
+              setSettingsOpen(false)
+              setSettingsSetupMode(undefined)
+            }}
             bootstrap={bootstrap}
             onChange={(settings) =>
               queryClient.setQueryData(['bootstrap'], { ...bootstrap, settings })
             }
             notify={notify}
             initialTab={settingsTab}
+            initialSetupMode={settingsSetupMode}
           />
         )}
       </Suspense>

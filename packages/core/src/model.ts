@@ -204,6 +204,10 @@ export interface Settings {
   htmlSignatures?: Record<string, boolean>
   /** Where the reader goes after a conversation leaves the current view. */
   afterArchive?: 'next' | 'previous' | 'list'
+  /** Views hidden from the sidebar. Absent means every view is shown. */
+  hiddenViews?: View[]
+  /** When true the unified Folders section is hidden from the sidebar. */
+  hideFolders?: boolean
   /**
    * Keyboard shortcuts changed from their defaults, by action. Each binding is a list of chords
    * pressed in turn, such as `['Mod+K']` or `['G', 'I']`; an empty list turns a shortcut off.
@@ -283,31 +287,9 @@ export interface FolderMappingReview {
    */
   mappings: Partial<Record<FolderRole, { path: string; source: 'server' | 'user' | 'name' } | null>>
 }
-export type OAuthProviderId = 'google' | 'microsoft'
-export interface OAuthTokens {
-  provider: OAuthProviderId
-  accessToken: string
-  /** Refresh token lives in OS keyring; never leaves main. */
-  refreshToken?: string
-  expiresAt?: string
-}
-/**
- * A finished browser sign-in, held in the main process until the account is connected. No token
- * ever crosses to the renderer: only this ID does.
- */
-export interface OAuthSignIn {
-  sessionId: string
-  provider: OAuthProviderId
-  expiresAt?: string
-}
 export interface ConnectInput {
   config: ConnectionConfig
-  password?: string
-  /** OAuth2 access token (RAM only). When set, IMAP/SMTP use XOAUTH2. */
-  accessToken?: string
-  oauthProvider?: OAuthProviderId
-  /** A sign-in completed in the main process; resolves to the token it holds. */
-  oauthSessionId?: string
+  password: string
   /** Only used when the outgoing server has its own credentials. */
   outgoingPassword?: string
   name: string
@@ -322,8 +304,6 @@ export interface ConnectionSettings {
   name: string
   config: ConnectionConfig
   remember: boolean
-  /** Set when this connection signs in with OAuth instead of a password. */
-  oauthProvider?: OAuthProviderId
   folders?: FolderMappings
 }
 export type DiscoverySource =
@@ -509,8 +489,6 @@ export interface DesktopMailAPI {
   discover(email: string): Promise<DiscoveryResult>
   /** Checks a login without saving it. Nothing is sent to any recipient. */
   testConnection(input: ConnectInput): Promise<ConnectionTest>
-  /** Runs the provider's browser sign-in and keeps the tokens in the main process. */
-  beginOAuth(provider: OAuthProviderId): Promise<OAuthSignIn>
   connect(input: ConnectInput): Promise<Account[]>
   connectionSettings(connectionId: string): Promise<ConnectionSettings>
   folderMappings(accountId: string): Promise<FolderMappingReview>

@@ -85,9 +85,7 @@ export function imapFlowOptions(
     // STARTTLS is required, never opportunistic: without it the login is not sent at all.
     doSTARTTLS: implicit ? undefined : true,
     ...(isIP(options.host.replace(/^\[|\]$/g, '')) ? {} : { servername: options.host }),
-    auth: options.accessToken
-      ? { user: options.username, accessToken: options.accessToken }
-      : { user: options.username, pass: options.password },
+    auth: { user: options.username, pass: options.password },
     tls: {
       rejectUnauthorized: true,
       minVersion: 'TLSv1.2',

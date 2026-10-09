@@ -106,7 +106,7 @@ Open **Settings → Accounts → Add account** and type your email address. Inla
 
 IMAP accounts build a local index in the background, newest Inbox mail first. Until it catches up, lists tell you that older mail may be missing, and search still runs on the server. If your server can't do an action safely, such as a move without `MOVE` or `UIDPLUS`, Inlark turns it off and tells you why rather than guessing.
 
-Gmail and Microsoft sign-in (OAuth) aren't supported yet.
+Gmail and Outlook need an [app password](https://myaccount.google.com/apppasswords), since both refuse ordinary account passwords over IMAP and SMTP.
 
 ## Build from source
 

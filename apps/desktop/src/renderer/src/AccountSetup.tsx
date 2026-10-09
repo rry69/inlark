@@ -26,8 +26,6 @@ import {
   type DiscoverySource,
   type FolderMappingReview,
   type FolderMappings,
-  type OAuthProviderId,
-  type OAuthSignIn,
   type Protocol,
   type ServerSettings,
   type TransportSecurity,
@@ -131,77 +129,43 @@ const hostOf = (url: string) => {
 const candidateTitle = (c: DiscoveryCandidate) =>
   c.protocol === 'jmap' ? hostOf(c.serverUrl) : c.provider || c.incoming.host
 const emailSchema = z.email()
-/** Only the hosted providers Inlark has client IDs for. Everything else uses a password. */
-const oauthDomains: Record<string, OAuthProviderId> = {
-  'gmail.com': 'google',
-  'googlemail.com': 'google',
-  'outlook.com': 'microsoft',
-  'hotmail.com': 'microsoft',
-  'live.com': 'microsoft',
-  'msn.com': 'microsoft',
+/** The label shown for a hosted provider's built-in settings, used to recognise it. */
+const hostedLabels: Record<string, string> = {
+  'gmail.com': 'Google',
+  'googlemail.com': 'Google',
+  'outlook.com': 'Microsoft',
+  'hotmail.com': 'Microsoft',
+  'live.com': 'Microsoft',
+  'msn.com': 'Microsoft',
 }
-const oauthLabels: Record<OAuthProviderId, string> = {
-  google: 'Google',
-  microsoft: 'Microsoft',
-}
-const oauthFor = (address: string, saved?: OAuthProviderId): OAuthProviderId | undefined =>
-  saved || oauthDomains[(address.split('@')[1] || '').toLowerCase()]
 /**
  * Built-in IMAP/SMTP settings for the hosted providers, used when discovery publishes
- * nothing (Gmail/Outlook have no autoconfig/SRV records). No backend change: these become
- * ordinary candidates the existing test/connection flow verifies with XOAUTH2.
+ * nothing (Gmail/Outlook have no autoconfig/SRV records). They become ordinary candidates
+ * the existing test/connection flow verifies with a password or app password.
  */
-const oauthPreset = (address: string): DiscoveryCandidate | undefined => {
+const hostedPreset = (address: string): DiscoveryCandidate | undefined => {
   const domain = (address.split('@')[1] || '').toLowerCase()
-  const provider = oauthDomains[domain]
-  if (!provider || !address.includes('@')) return undefined
-  const servers =
-    provider === 'google'
-      ? {
-          incoming: { host: 'imap.gmail.com', port: 993, security: 'tls' as const },
-          outgoing: { host: 'smtp.gmail.com', port: 587, security: 'starttls' as const },
-          label: 'Google',
-        }
-      : {
-          incoming: { host: 'outlook.office365.com', port: 993, security: 'tls' as const },
-          outgoing: { host: 'smtp-mail.outlook.com', port: 587, security: 'starttls' as const },
-          label: 'Microsoft',
-        }
+  const label = hostedLabels[domain]
+  if (!label || !address.includes('@')) return undefined
+  const google = label === 'Google'
   return {
     protocol: 'imap',
     source: 'directory',
-    incoming: { ...servers.incoming, username: address },
-    outgoing: { ...servers.outgoing, username: address },
-    provider: servers.label,
+    incoming: {
+      host: google ? 'imap.gmail.com' : 'outlook.office365.com',
+      port: 993,
+      security: 'tls',
+      username: address,
+    },
+    outgoing: {
+      host: google ? 'smtp.gmail.com' : 'smtp-mail.outlook.com',
+      port: 587,
+      security: 'starttls',
+      username: address,
+    },
+    provider: label,
   }
 }
-/** True when the error means this build has no OAuth client ID for the provider. */
-const missingClientId = (message: string) => /not configured in this build/i.test(message)
-
-/** The multicolor "G" used on the Google button. Decorative; the label carries the meaning. */
-function GoogleMark() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path
-        fill="#4285F4"
-        d="M23.5 12.3c0-.9-.1-1.5-.3-2.3H12v4.3h6.5c0 1.1-.7 2.7-2.1 3.8l-.1.1 3 2.4.1.1c1.9-1.8 3.1-4.4 3.1-8.4z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.8-2.9c-1 .7-2.4 1.2-4.1 1.2-3.1 0-5.8-2.1-6.8-5l-.1.1-3.1 2.4-.1.1C3.9 21.3 7.7 24 12 24z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.2 14.4c-.2-.7-.4-1.5-.4-2.4s.1-1.7.4-2.4l-.1-.1-3.1-2.4-.1.1C.7 9.4 0 10.6 0 12s.7 2.6 1.9 3.7l3.3-1.3z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 4.7c1.8 0 3 .8 3.7 1.4l3.3-3.2C17.9 1.1 15.2 0 12 0 7.7 0 3.9 2.7 1.9 6.9l3.3 2.8c1-2.9 3.7-5 6.8-5z"
-      />
-    </svg>
-  )
-}
-
 function TextField({
   label,
   error,
@@ -327,14 +291,13 @@ export function AccountSetup({
   const [editing, setEditing] = useState(mode === 'edit')
   const [fields, setFields] = useState<Fields>(() => blankFields(existing?.email || ''))
   const [password, setPassword] = useState('')
-  const [oauth, setOauth] = useState<OAuthSignIn>()
   const [outgoingPassword, setOutgoingPassword] = useState('')
   const [remember, setRemember] = useState(bootstrap.secureStorage)
   const [name, setName] = useState(existing?.name || '')
   const [senderName, setSenderName] = useState(existing?.senderName || '')
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState<'testing' | 'connecting' | 'oauth'>()
+  const [busy, setBusy] = useState<'testing' | 'connecting'>()
   const [test, setTest] = useState<ConnectionTest>()
   const [review, setReview] = useState<FolderMappingReview>()
   const [choices, setChoices] = useState<FolderMappings>({})
@@ -375,9 +338,6 @@ export function AccountSetup({
   }, [phase])
   const domain = email.split('@')[1] || 'example.com'
   const candidates = discovery?.candidates || []
-  const oauthProvider = oauthFor(email, savedSettings?.oauthProvider || oauth?.provider)
-  /** The provider for the typed address, so OAuth is offered before any server step. */
-  const emailProvider = oauthFor(email.trim())
 
   /** Any change invalidates an earlier connection check and the message it produced. */
   const changed = (...keys: string[]) => {
@@ -445,12 +405,10 @@ export function AccountSetup({
     setEmailError('')
     setNotice('')
     setError('')
-    // A token belongs to one account; a new address needs its own sign-in.
-    setOauth(undefined)
     try {
       const result = await api.discover(address)
       if (token !== lookup.current) return
-      const preset = result.candidates.length ? undefined : oauthPreset(result.email)
+      const preset = result.candidates.length ? undefined : hostedPreset(result.email)
       const withPreset: DiscoveryResult = preset ? { ...result, candidates: [preset] } : result
       setDiscovery(withPreset)
       setEmail(result.email)
@@ -462,7 +420,7 @@ export function AccountSetup({
           setNotice(
             'Using the built-in settings for ' +
               (preset.protocol === 'imap' ? preset.provider : '') +
-              '. Sign in with OAuth below, or enter an app password instead.',
+              '. Use an app password if the account has two-step verification.',
           )
       } else {
         setFields(blankFields(result.email))
@@ -537,9 +495,7 @@ export function AccountSetup({
     const separate = fields.protocol === 'imap' && !fields.sameLogin
     const parsed = accountSchema.safeParse({
       config,
-      // An OAuth sign-in stands in for the password; the token itself stays in the main process.
-      ...(password ? { password } : {}),
-      ...(oauth && !password ? { oauthSessionId: oauth.sessionId } : {}),
+      password,
       ...(separate && outgoingPassword ? { outgoingPassword } : {}),
       name: name.trim(),
       ...(senderName.trim() ? { senderName: senderName.trim() } : {}),
@@ -582,125 +538,7 @@ export function AccountSetup({
       setBusy(undefined)
     }
   }
-  /** Opens the provider's sign-in page and waits for the redirect; no token reaches this window. */
-  const signInWith = async (provider: OAuthProviderId) => {
-    setBusy('oauth')
-    setError('')
-    setTest(undefined)
-    try {
-      const result = await api.beginOAuth(provider)
-      setOauth(result)
-      // A token is only good for one account; the typed password no longer belongs to it.
-      setPassword('')
-      setOutgoingPassword('')
-    } catch (e) {
-      setError(friendlyError(e))
-    } finally {
-      setBusy(undefined)
-    }
-  }
-  /**
-   * One-click Google flow: skips discovery (Gmail publishes nothing to look up), presets the
-   * built-in servers, signs in in the browser, then checks and connects automatically.
-   */
-  const startGoogleDirect = async () => {
-    const address = email.trim().toLowerCase()
-    if (!emailSchema.safeParse(address).success) {
-      setEmailError('Enter a valid email address.')
-      return
-    }
-    if (oauthFor(address) !== 'google') {
-      setEmailError(
-        'Continue with Google is for Gmail addresses. Press Continue for other providers.',
-      )
-      return
-    }
-    if (busy || discovering) return
-    const preset = oauthPreset(address)
-    if (!preset) return
-    setEmail(address)
-    setEmailError('')
-    setNotice('Using the built-in settings for Google. Your browser opens the sign-in page.')
-    setError('')
-    setOauth(undefined)
-    setPassword('')
-    setOutgoingPassword('')
-    setDiscovery({ email: address, domain: address.split('@')[1] || '', candidates: [preset] })
-    const next = fieldsFrom(preset, address)
-    setFields(next)
-    setOrigin({ kind: 'candidate', index: 0 })
-    setEditing(false)
-    setErrors({})
-    setTest(undefined)
-    setPhase('server')
-    setBusy('oauth')
-    let signIn: OAuthSignIn
-    try {
-      signIn = await api.beginOAuth('google')
-    } catch (e) {
-      setError(friendlyError(e))
-      setBusy(undefined)
-      return
-    }
-    setOauth(signIn)
-    const input = buildPresetInput(next, address, signIn)
-    if (!input) {
-      setBusy(undefined)
-      return
-    }
-    await testAndConnect(input)
-  }
-  /**
-   * Builds a validated connect request from preset fields (same shape as `validate`, but from
-   * the given fields instead of state, which has not re-rendered yet when called directly).
-   */
-  const buildPresetInput = (
-    next: Fields,
-    address: string,
-    signIn: OAuthSignIn,
-  ): ConnectInput | undefined => {
-    const parsed = accountSchema.safeParse({
-      config: {
-        protocol: 'imap' as const,
-        email: address,
-        incoming: {
-          host: next.incoming.host,
-          port: Number(next.incoming.port.trim()) || 0,
-          security: next.incoming.security,
-          username: next.username.trim(),
-        },
-        outgoing: {
-          host: next.outgoing.host,
-          port: Number(next.outgoing.port.trim()) || 0,
-          security: next.outgoing.security,
-          username: (next.sameLogin ? next.username : next.outgoingUsername).trim(),
-        },
-        outgoingSameCredentials: next.sameLogin,
-      },
-      oauthSessionId: signIn.sessionId,
-      name: name.trim(),
-      ...(senderName.trim() ? { senderName: senderName.trim() } : {}),
-      remember,
-      ...(existing ? { connectionId: existing.connectionId } : {}),
-      ...(savedSettings?.folders ? { folders: savedSettings.folders } : {}),
-    })
-    if (parsed.success) {
-      setErrors({})
-      return parsed.data
-    }
-    const found: Record<string, string> = {}
-    for (const issue of parsed.error.issues) {
-      const key = issue.path.join('.')
-      found[key] ??= issue.message
-    }
-    setErrors(found)
-    setEditing(true)
-    requestAnimationFrame(() =>
-      form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
-    )
-    return undefined
-  }
-  /** Checks both servers first, confirms folders when needed, then connects. Shared by submit and the Google shortcut. */
+  /** Checks both servers first, confirms folders when needed, then connects. */
   const testAndConnect = async (input: ConnectInput) => {
     if (input.config.protocol === 'jmap') return connect(input)
     // IMAP checks both servers first, so a failure names the server that needs attention.
@@ -773,13 +611,7 @@ export function AccountSetup({
             ? 'Save and sign in'
             : 'Sign in'
   const busyLabel =
-    phase === 'email'
-      ? 'Continue'
-      : busy === 'testing'
-        ? 'Checking servers…'
-        : busy === 'oauth'
-          ? 'Waiting for sign-in…'
-          : 'Connecting…'
+    phase === 'email' ? 'Continue' : busy === 'testing' ? 'Checking servers…' : 'Connecting…'
   const isBusy = discovering || !!busy
   const selected = origin.kind === 'candidate' ? candidates[origin.index] : undefined
   const failed = test && (!test.incoming.ok || (test.outgoing && !test.outgoing.ok))
@@ -850,46 +682,6 @@ export function AccountSetup({
                 <Spinner size={12} />
                 Looking up settings for {email.split('@')[1] || 'your address'}…
               </>
-            )}
-          </div>
-          {emailProvider && emailProvider !== 'google' && (
-            <div className="form-notice setup-notice" role="status">
-              <AlertCircle size={14} />
-              <span>
-                You typed an {oauthLabels[emailProvider]} address. {oauthLabels[emailProvider]}{' '}
-                sign-in isn’t set up in this build yet — press Continue and use a password or app
-                password, or use a Gmail address with the button above.
-              </span>
-            </div>
-          )}
-          <div className="setup-oauth">
-            <div className="setup-provider-buttons">
-              <Button
-                onClick={() => void startGoogleDirect()}
-                disabled={isBusy || isDemo}
-                className="setup-oauth-button"
-              >
-                {busy === 'oauth' ? <Spinner size={13} /> : <GoogleMark />}
-                Continue with Google
-              </Button>
-              <Button disabled className="setup-oauth-button">
-                Continue with Microsoft
-              </Button>
-            </div>
-            <p className="field-hint">
-              {isDemo
-                ? 'Provider sign-in needs the desktop app — this preview uses demo accounts.'
-                : 'Recommended for Gmail — your browser opens a Google sign-in page and Inlark never sees your password. Microsoft needs an Azure app key first. Prefer a password or another provider? Press Continue.'}
-            </p>
-            {missingClientId(error) && (
-              <div className="form-notice setup-notice" role="status">
-                <AlertCircle size={14} />
-                <span>
-                  This build has no Google sign-in key (INLARK_GOOGLE_CLIENT_ID is unset). Add it to
-                  apps/desktop/.env.local and restart the app, or press Continue and use an app
-                  password instead.
-                </span>
-              </div>
             )}
           </div>
         </section>
@@ -1066,45 +858,6 @@ export function AccountSetup({
 
             <section className="account-form-section">
               <h4>Sign in</h4>
-              {oauthProvider && (
-                <div className="setup-oauth">
-                  {oauth ? (
-                    <p className="setup-oauth-done">
-                      <Check size={13} />
-                      <span>
-                        Signed in with {oauthLabels[oauth.provider]}. Your access token stays in
-                        memory and is never written to this device.
-                      </span>
-                    </p>
-                  ) : (
-                    <Button
-                      onClick={() => void signInWith(oauthProvider)}
-                      disabled={isBusy}
-                      className="setup-oauth-button"
-                    >
-                      {busy === 'oauth' ? <Spinner size={13} /> : null}
-                      Sign in with {oauthLabels[oauthProvider]}
-                    </Button>
-                  )}
-                  <p className="field-hint">
-                    {oauth
-                      ? 'Continue to connect this account.'
-                      : 'Your browser opens a sign-in page. Inlark never sees your password there.'}
-                  </p>
-                  {oauthProvider && missingClientId(error) && (
-                    <div className="form-notice setup-notice" role="status">
-                      <AlertCircle size={14} />
-                      <span>
-                        This build has no sign-in key for {oauthLabels[oauthProvider]} (
-                        {'INLARK_' + oauthProvider.toUpperCase() + '_CLIENT_ID'} is unset). Either
-                        rebuild with the key, or use an app password instead: create one in your{' '}
-                        {oauthProvider === 'google' ? 'Google Account' : 'Microsoft account'}{' '}
-                        security settings and enter it in the password field.
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
               <div className="form-row">
                 <TextField
                   label="Username"
@@ -1126,21 +879,19 @@ export function AccountSetup({
                     )
                   }
                 />
-                {!oauth && (
-                  <TextField
-                    label="Password or app password"
-                    type="password"
-                    autoComplete="current-password"
-                    autoFocus={!editing}
-                    placeholder="Your password"
-                    value={password}
-                    error={errors.password}
-                    onChange={(e) => {
-                      setPassword(e.target.value)
-                      changed('password')
-                    }}
-                  />
-                )}
+                <TextField
+                  label="Password or app password"
+                  type="password"
+                  autoComplete="current-password"
+                  autoFocus={!editing}
+                  placeholder="Your password"
+                  value={password}
+                  error={errors.password}
+                  onChange={(e) => {
+                    setPassword(e.target.value)
+                    changed('password')
+                  }}
+                />
               </div>
               {fields.protocol === 'imap' && (
                 <>
@@ -1166,20 +917,18 @@ export function AccountSetup({
                           update({ outgoingUsername: e.target.value }, 'config.outgoing.username')
                         }
                       />
-                      {!oauth && (
-                        <TextField
-                          label="Outgoing password"
-                          type="password"
-                          autoComplete="off"
-                          placeholder="Outgoing server password"
-                          value={outgoingPassword}
-                          error={errors.outgoingPassword}
-                          onChange={(e) => {
-                            setOutgoingPassword(e.target.value)
-                            changed('outgoingPassword')
-                          }}
-                        />
-                      )}
+                      <TextField
+                        label="Outgoing password"
+                        type="password"
+                        autoComplete="off"
+                        placeholder="Outgoing server password"
+                        value={outgoingPassword}
+                        error={errors.outgoingPassword}
+                        onChange={(e) => {
+                          setOutgoingPassword(e.target.value)
+                          changed('outgoingPassword')
+                        }}
+                      />
                     </div>
                   )}
                 </>

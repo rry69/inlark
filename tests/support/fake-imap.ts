@@ -135,10 +135,6 @@ export class FakeImapServer {
   capabilities = new Set(['IMAP4REV1', 'IDLE', 'MOVE', 'UIDPLUS', 'CONDSTORE'])
   boxes = new Map<string, FakeBox>()
   password = 'disposable'
-  /** When set, this is the access token accepted instead of the password. */
-  accessToken?: string
-  /** The access tokens each connection presented. */
-  tokens: string[] = []
   down = false
   /** Like servers whose search index lags behind APPEND: header searches find nothing. */
   laggingSearch = false
@@ -262,11 +258,8 @@ export class FakePort implements ImapPort {
   async connect() {
     if (this.server.down)
       throw new ProviderError('network', 'The incoming server could not be reached.')
-    // A token stands in for the password, exactly as XOAUTH2 does on a real server.
-    const credential = this.options.accessToken || this.options.password
-    if (credential !== this.server.password && credential !== this.server.accessToken)
+    if (this.options.password !== this.server.password)
       throw new ProviderError('authentication', 'The incoming server rejected this login.')
-    this.server.tokens.push(this.options.accessToken || '')
     this.open = true
   }
   async close() {

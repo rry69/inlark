@@ -221,7 +221,6 @@ else {
         updateStatus: updates.getStatus,
         discover: service.discover,
         testConnection: service.testConnection,
-        beginOAuth: service.beginOAuth,
         connect: service.connect,
         connectionSettings: service.connectionSettings,
         folderMappings: service.folderMappings,

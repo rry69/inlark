@@ -177,21 +177,53 @@
 .account-chevron.closed {
   transform: rotate(-90deg);
 }
+.account-toggle {
+  cursor: pointer;
+}
 .account-toggle.account-current {
+  color: var(--text);
+  background: var(--hover);
+}
+.account-toggle.account-current[aria-current='page'] {
+  background: var(--selected);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+.account-chevron-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.account-chevron-button:hover {
+  background: var(--hover);
   color: var(--text);
 }
 .account-toggle .account-chevron {
-  margin-left: auto;
-  color: var(--faint);
+  color: inherit;
 }
 .account-children {
-  margin: 1px 0 8px 18px;
-  padding-left: 5px;
+  margin: 1px 0 8px 19px;
+  padding-left: 6px;
   border-left: 1px solid var(--border);
 }
 .account-children .nav-item {
   height: 30px;
   font-size: 12px;
+}
+.account-no-folders {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--faint);
 }
 .account-children .nav-item > svg {
   flex-shrink: 0;
@@ -549,6 +581,8 @@
   overflow-anchor: none;
   scrollbar-gutter: stable;
   padding-bottom: 16px;
+  /* Keep keyboard focus clear of the floating selection bar (WCAG 2.2 focus-not-obscured). */
+  scroll-padding-bottom: 104px;
 }
 .mail-list:focus-visible {
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -604,6 +638,11 @@
 .row-selector .checkbox {
   position: absolute;
   opacity: 0;
+  /* visibility keeps hidden controls out of the Tab order until hover/focus. */
+  visibility: hidden;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 120ms;
 }
 .unread-dot {
   width: 5px;
@@ -621,6 +660,8 @@
 .mail-row.selected .row-selector .checkbox,
 .row-selector:focus-within .checkbox {
   opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
 }
 .mail-list:has(.selected) .unread-dot,
 .mail-row:hover .unread-dot,
@@ -707,10 +748,13 @@
   padding: 5px;
   color: var(--faint);
   opacity: 0;
+  visibility: hidden;
+  cursor: pointer;
   transition:
     opacity 120ms ease,
     color 120ms ease,
-    background-color 120ms ease;
+    background-color 120ms ease,
+    visibility 0s linear 120ms;
 }
 .row-star svg {
   transition:
@@ -721,6 +765,14 @@
 .mail-row:focus-within .row-star,
 .row-star.starred {
   opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.row-star:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  opacity: 1;
+  visibility: visible;
 }
 .row-star:hover:not(:disabled) {
   color: var(--secondary);
@@ -743,6 +795,7 @@ svg.starred {
 .row-quick-actions {
   position: absolute;
   right: 30px;
+  z-index: 2;
   display: flex;
   gap: 2px;
   padding: 2px;
@@ -750,13 +803,39 @@ svg.starred {
   border-radius: 6px;
   background: var(--raised);
   box-shadow: 0 2px 6px #0002;
+  /* Overlay floats above meta content: no layout shift when it appears. */
   opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px);
   pointer-events: none;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease,
+    visibility 0s linear 150ms;
 }
 .mail-row:hover .row-quick-actions,
 .mail-row:focus-within .row-quick-actions {
   opacity: 1;
+  visibility: visible;
+  transform: none;
+  /* 80ms intent delay: skips flicker during fast J/K keyboard travel. */
+  transition-delay: 80ms;
   pointer-events: auto;
+}
+.row-quick-actions :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Touch-first devices: hover overlays are unreachable, so rely on tap-to-open
+   plus the sticky selection bar instead of covering row content. */
+@media (hover: none) {
+  .row-quick-actions {
+    display: none;
+  }
+  .row-selector .checkbox {
+    opacity: 1;
+    visibility: visible;
+  }
 }
 .density-compact .row-content {
   flex-direction: row;
@@ -1026,6 +1105,14 @@ svg.starred {
 }
 .collapsed-message .message-heading {
   opacity: 0.7;
+  transition: opacity 150ms ease;
+}
+.collapsed-message:focus-within .message-heading {
+  opacity: 1;
+}
+.message-heading button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 /* Leaving a mailing list is a conversation action, so it sits with the others in the toolbar. */
 .unsubscribe-button {
@@ -2571,6 +2658,44 @@ fieldset.compose-format:disabled {
     0 8px 28px #0003,
     0 2px 5px #0002;
   animation: selection-appear 140ms ease-out;
+  /* Narrow windows: scroll actions instead of clipping them. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.selection-bar::-webkit-scrollbar {
+  display: none;
+}
+.selection-bar:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+}
+/* Thin indeterminate progress while a bulk action runs. */
+.selection-progress {
+  position: absolute;
+  top: -1px;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  pointer-events: none;
+}
+.selection-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: selection-progress 1.1s ease-in-out infinite;
+}
+@keyframes selection-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
 }
 .selection-summary {
   display: flex;
@@ -3526,6 +3651,19 @@ fieldset.compose-format:disabled {
   .shortcut-recorder {
     animation: none;
   }
+  .selection-bar,
+  .row-quick-actions,
+  .row-star,
+  .row-selector .checkbox,
+  .collapsed-message .message-heading {
+    animation: none;
+    transition: none;
+  }
+  .selection-progress::after {
+    animation: none;
+    width: 100%;
+    transform: none;
+  }
 }
 .shortcut-notice {
   margin: 0 0 10px;
@@ -3776,33 +3914,6 @@ fieldset.compose-format:disabled {
 }
 .setup-notice {
   margin: 10px 0 4px;
-}
-.setup-oauth {
-  margin-bottom: 14px;
-}
-.setup-provider-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.setup-oauth-button {
-  width: 100%;
-  justify-content: center;
-}
-.setup-oauth-done {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-.setup-oauth-done svg {
-  color: var(--green);
-  flex-shrink: 0;
-}
-.setup-oauth .field-hint {
-  margin-top: 8px;
 }
 .protocol-tag {
   display: inline-flex;

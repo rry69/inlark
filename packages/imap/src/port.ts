@@ -54,8 +54,6 @@ export interface ImapPort {
 
 export interface ImapServerOptions extends ServerSettings {
   password: string
-  /** OAuth2 access token (RAM only). When set, auth uses XOAUTH2 instead of password. */
-  accessToken?: string
   timeoutMs?: number
   /** Tests only: trust an extra certificate authority. */
   tls?: { ca?: string | Uint8Array }

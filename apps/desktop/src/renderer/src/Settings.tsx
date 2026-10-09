@@ -33,6 +33,7 @@ import { AccountSetup, type SetupMode } from './AccountSetup'
 import { FolderMappingsDialog } from './FolderMappings'
 import { IndexingMeter } from './IndexingMeter'
 import { ShortcutEditor } from './ShortcutEditor'
+import { views } from './Sidebar'
 
 /** A miniature of the app window in one theme. */
 function ThemePreview({ theme, className }: { theme: 'dark' | 'light'; className?: string }) {
@@ -141,6 +142,7 @@ export function SettingsPanel({
   onChange,
   notify,
   initialTab = 'general',
+  initialSetupMode,
 }: {
   open: boolean
   onClose: () => void
@@ -148,10 +150,17 @@ export function SettingsPanel({
   onChange: (settings: Preferences) => void
   notify: (message: string, tone?: 'error' | 'info') => void
   initialTab?: string
+  initialSetupMode?: SetupMode
 }) {
   // With nothing connected yet, opening Accounts can only mean adding one.
   const initialSetup = (): { mode: SetupMode } | undefined =>
-    initialTab === 'accounts' && !bootstrap.accounts.length ? { mode: 'add' } : undefined
+    initialTab === 'accounts'
+      ? initialSetupMode
+        ? { mode: initialSetupMode }
+        : !bootstrap.accounts.length
+          ? { mode: 'add' }
+          : undefined
+      : undefined
   const [tab, setTab] = useState(initialTab),
     [setup, setSetup] = useState<{ mode: SetupMode; account?: Account } | undefined>(initialSetup),
     [remove, setRemove] = useState<Account>(),
@@ -168,7 +177,7 @@ export function SettingsPanel({
       setTab(initialTab)
       setSetup(initialSetup())
     }
-  }, [open, initialTab])
+  }, [open, initialTab, initialSetupMode])
   const updateAppearance = (account: Account, appearance: AccountAppearance) => {
     // Show the change everywhere at once, and put it back if it cannot be saved.
     queryClient.setQueryData<Bootstrap>(
@@ -269,6 +278,47 @@ export function SettingsPanel({
                         </span>
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="setting-section">
+                  <h4>Sidebar</h4>
+                  <p className="setting-footnote">
+                    Choose which views appear in the sidebar. Snoozed, Important, and Scheduled
+                    need server support and stay hidden until that ships.
+                  </p>
+                  {views.map((v) => {
+                    const hidden = bootstrap.settings.hiddenViews || []
+                    const shown = !hidden.includes(v.id)
+                    return (
+                      <div className="setting-row" key={v.id}>
+                        <div>
+                          <strong>{v.title}</strong>
+                        </div>
+                        <Switch
+                          aria-label={'Show ' + v.title + ' in sidebar'}
+                          checked={shown}
+                          disabled={v.id === 'inbox'}
+                          onCheckedChange={(value) =>
+                            void update({
+                              hiddenViews: value
+                                ? hidden.filter((id) => id !== v.id)
+                                : [...hidden, v.id],
+                            })
+                          }
+                        />
+                      </div>
+                    )
+                  })}
+                  <div className="setting-row">
+                    <div>
+                      <strong>Folders</strong>
+                      <p>Custom folders merged across every account.</p>
+                    </div>
+                    <Switch
+                      aria-label="Show Folders in sidebar"
+                      checked={!bootstrap.settings.hideFolders}
+                      onCheckedChange={(value) => void update({ hideFolders: !value })}
+                    />
                   </div>
                 </div>
                 <div className="setting-section">

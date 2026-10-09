@@ -550,11 +550,6 @@ export const demoAPI: DesktopMailAPI = {
     await pause(900)
     return demoTest(input)
   },
-  beginOAuth: async (provider) => {
-    // Demo only: no browser, no provider, no token anywhere.
-    await pause(700)
-    return { sessionId: 'demo-oauth', provider, expiresAt: new Date(Date.now() + 3600_000).toISOString() }
-  },
   connect: async (input) => {
     await pause(600)
     const test = demoTest(input)

@@ -55,8 +55,6 @@ export interface ImapProviderOptions {
   name: string
   config: ImapConnectionConfig
   password: string
-  /** OAuth2 access token (RAM only). When set, IMAP/SMTP use XOAUTH2. */
-  accessToken?: string
   /** Only when the outgoing server has its own credentials. */
   outgoingPassword?: string
   folders?: FolderMappings
@@ -161,15 +159,10 @@ export class ImapProvider implements MailProvider {
   private emit(event: ProviderEvent) {
     for (const listener of this.listeners) listener(event)
   }
-  /** Rotates the RAM-only OAuth token without rebuilding the provider. */
-  setAccessToken(accessToken?: string) {
-    this.options.accessToken = accessToken
-  }
   private imapSettings(): ImapServerOptions {
     return {
       ...this.options.config.incoming,
       password: this.options.password,
-      ...(this.options.accessToken ? { accessToken: this.options.accessToken } : {}),
       tls: this.options.tls,
     }
   }
@@ -183,7 +176,6 @@ export class ImapProvider implements MailProvider {
       password: config.outgoingSameCredentials
         ? this.options.password
         : this.options.outgoingPassword || '',
-      ...(this.options.accessToken ? { accessToken: this.options.accessToken } : {}),
       tls: this.options.tls,
     }
   }

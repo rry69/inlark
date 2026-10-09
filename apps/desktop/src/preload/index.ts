@@ -6,7 +6,6 @@ const methods = [
   'ready',
   'discover',
   'testConnection',
-  'beginOAuth',
   'connect',
   'connectionSettings',
   'folderMappings',
